@@ -1,0 +1,23 @@
+# Build outputs and user-local game data
+artifacts/
+dist/
+sandbox/
+backup/
+logs/
+isolated-saves/
+*.exe
+*.dll
+*.lib
+*.exp
+*.obj
+*.res
+*.pdb
+*.ilk
+*.bak
+*.log
+*.dat
+steam_appid.txt
+*.token
+*.vdf
+__pycache__/
+*.py[cod]
