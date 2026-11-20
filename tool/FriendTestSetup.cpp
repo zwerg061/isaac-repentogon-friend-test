@@ -39,7 +39,8 @@ enum { IDC_PATH = 1001, IDC_BROWSE, IDC_INSTALL, IDC_RUN_PATCHER, IDC_GUIDE, IDC
 enum {
     IDR_PATCHER = 101, IDR_GUIDE = 102, IDR_MODSYNC = 103, IDR_SESSION = 104,
     IDR_STEAMBRIDGE = 105, IDR_APPID = 106, IDR_VERSION = 107, IDR_RESYNC = 108,
-    IDR_PATCHED_DLL = 109, IDR_INSTALL_SCRIPT = 110
+    IDR_PATCHED_DLL = 109, IDR_INSTALL_SCRIPT = 110,
+    IDR_ZHL_LOADER = 111, IDR_LIBZHL = 112
 };
 
 static const wchar_t* const kInstallScriptName = L"Install-ModSyncPatch.ps1";
@@ -435,7 +436,9 @@ static const EmbeddedFile kEmbeddedFiles[] = {
     { IDR_VERSION, L"VERSION" },
     { IDR_RESYNC, L"Resync-ProfileAndSaveData.ps1" },
     { IDR_PATCHED_DLL, L"zhlREPENTOGON.dll" },
-    { IDR_INSTALL_SCRIPT, L"Install-ModSyncPatch.ps1" }
+    { IDR_INSTALL_SCRIPT, L"Install-ModSyncPatch.ps1" },
+    { IDR_ZHL_LOADER, L"zhlLoader.dll" },
+    { IDR_LIBZHL, L"libzhl.dll" }
 };
 
 static bool ToolsComplete(const std::wstring& folder) {

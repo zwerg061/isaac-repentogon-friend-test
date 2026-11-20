@@ -217,16 +217,30 @@ function Find-IsaacRoot {
     throw 'Steam-Isaac-Installation nicht gefunden. Bitte -IsaacRoot angeben.'
 }
 
+function Restore-RepentogonExe([string]$Root) {
+    # A failed force update can rename <Root>\Repentogon\isaac-ng.exe to .bak.
+    # Without that EXE the launcher cannot start and path detection falls back
+    # to the game root, which is wrong.
+    $folder = Join-Path $Root 'Repentogon'
+    $exe = Join-Path $folder 'isaac-ng.exe'
+    if (Test-Path -LiteralPath $exe -PathType Leaf) { return }
+    $backup = Join-Path $folder 'Isaac-ng.exe.bak'
+    if (Test-Path -LiteralPath $backup -PathType Leaf) {
+        Copy-FileWithRetry $backup $exe
+        Write-Log "Repentogon-EXE aus Backup wiederhergestellt: $exe"
+        return
+    }
+    Write-Log "Warnung: Repentogon-EXE fehlt und kein Backup vorhanden: $exe"
+}
+
 function Get-RepentogonDllPath([string]$Root) {
     # The launcher starts <Root>\Repentogon\isaac-ng.exe when that folder exists,
     # so THAT is the DLL which is actually loaded. The sandbox works because its
     # patched DLL sits in this folder - patching only the game root is not enough.
-    $repentogonExe = Join-Path $Root 'Repentogon\isaac-ng.exe'
-    if (Test-Path -LiteralPath $repentogonExe -PathType Leaf) {
-        $active = Join-Path $Root 'Repentogon\zhlREPENTOGON.dll'
-        if (Test-Path -LiteralPath $active -PathType Leaf) { return $active }
-    }
-    foreach ($candidate in @((Join-Path $Root 'zhlREPENTOGON.dll'), (Join-Path $Root 'Repentogon\zhlREPENTOGON.dll'))) {
+    $folder = Join-Path $Root 'Repentogon'
+    $active = Join-Path $folder 'zhlREPENTOGON.dll'
+    if (Test-Path -LiteralPath $active -PathType Leaf) { return $active }
+    foreach ($candidate in @((Join-Path $Root 'zhlREPENTOGON.dll'), $active)) {
         if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
     }
     return $null
@@ -566,26 +580,47 @@ function Invoke-Apply {
     $launcherIni = Set-LauncherSandboxConfig $root
     $installedByUs = @()
     if (-not (Test-RepentogonInstalled $root)) { $installedByUs = @(Install-Repentogon $root) }
+    Restore-RepentogonExe $root
     $dll = Get-RepentogonDllPath $root
     if (-not $dll) { throw 'zhlREPENTOGON.dll fehlt nach der REPENTOGON-Installation.' }
-    $backup = "$dll.orig"
-    $currentHash = Get-Sha256 $dll
-    if (-not (Test-Path -LiteralPath $backup -PathType Leaf)) {
-        Copy-FileWithRetry $dll $backup
-        if ((Get-Sha256 $backup) -ne $currentHash) { throw 'Sicherung der Original-DLL fehlgeschlagen (Hash-Mismatch).' }
-        Write-Log "Original-DLL gesichert: $backup"
+    $dllFolder = Split-Path -Parent $dll
+    # The launcher validates that zhlLoader, libzhl and zhlREPENTOGON come from
+    # the SAME build. Replace all three with the matching sandbox trio.
+    $trio = @('zhlREPENTOGON.dll', 'zhlLoader.dll', 'libzhl.dll')
+    $patchedFiles = @()
+    foreach ($name in $trio) {
+        $target = Join-Path $dllFolder $name
+        if (-not (Test-Path -LiteralPath $target -PathType Leaf)) { throw "REPENTOGON-Datei fehlt: $target" }
+        $source = if ($name -eq 'zhlREPENTOGON.dll') { $patched } else { Join-Path $ToolsRoot $name }
+        if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Passende REPENTOGON-Datei fehlt: $source" }
+        $sourceHash = Get-Sha256 $source
+        $backup = "$target.orig"
+        if (-not (Test-Path -LiteralPath $backup -PathType Leaf)) {
+            $current = Get-Sha256 $target
+            Copy-FileWithRetry $target $backup
+            if ((Get-Sha256 $backup) -ne $current) { throw "Sicherung von $name fehlgeschlagen (Hash-Mismatch)." }
+            Write-Log "Original gesichert: $backup"
+        }
+        $originalHash = Get-Sha256 $backup
+        if ((Get-Sha256 $target) -ne $sourceHash) {
+            Copy-FileWithRetry $source $target
+            if ((Get-Sha256 $target) -ne $sourceHash) { throw "Kopie von $name konnte nicht verifiziert werden." }
+        }
+        $attributes = [IO.File]::GetAttributes($target)
+        if (($attributes -band [IO.FileAttributes]::ReadOnly) -eq 0) {
+            [IO.File]::SetAttributes($target, ($attributes -bor [IO.FileAttributes]::ReadOnly))
+        }
+        $patchedFiles += [ordered]@{
+            name = $name
+            target = $target
+            backup = $backup
+            original_sha256 = $originalHash
+            patched_sha256 = $sourceHash
+        }
+        Write-Log "REPENTOGON-Datei aktiviert: $name ($sourceHash)"
     }
-    $originalHash = Get-Sha256 $backup
-    if ($currentHash -ne $patchedHash) {
-        Copy-FileWithRetry $patched $dll
-        if ((Get-Sha256 $dll) -ne $patchedHash) { throw 'Gepatchte DLL konnte nicht verifiziert werden.' }
-    }
-    # Write-protect the patched DLL so a stray auto-update cannot replace it.
-    $dllAttributes = [IO.File]::GetAttributes($dll)
-    if (($dllAttributes -band [IO.FileAttributes]::ReadOnly) -eq 0) {
-        [IO.File]::SetAttributes($dll, ($dllAttributes -bor [IO.FileAttributes]::ReadOnly))
-        Write-Log 'Gepatchte DLL schreibgeschuetzt (Schutz vor Auto-Update).'
-    }
+    $backup = ($patchedFiles | Where-Object { $_.name -eq 'zhlREPENTOGON.dll' } | Select-Object -First 1).backup
+    $originalHash = ($patchedFiles | Where-Object { $_.name -eq 'zhlREPENTOGON.dll' } | Select-Object -First 1).original_sha256
     $state = [ordered]@{
         schema_version = 1
         applied = $true
@@ -594,6 +629,7 @@ function Invoke-Apply {
         backup_path = $backup
         original_dll_sha256 = $originalHash
         patched_dll_sha256 = $patchedHash
+        patched_files = @($patchedFiles)
         repentogon_installed_by_us = ($installedByUs.Count -gt 0)
         installed_files = @($installedByUs)
         companion_path = if ($CompanionExe) { $CompanionExe } else { Join-Path $ToolsRoot $script:CompanionName }
@@ -623,11 +659,34 @@ function Invoke-Uninstall {
             $path = Join-Path $root $relative
             if (Test-Path -LiteralPath $path -PathType Leaf) { Clear-ReadOnly $path; Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }
         }
+        foreach ($entry in @($state.patched_files)) {
+            if ($entry.backup -and (Test-Path -LiteralPath $entry.backup -PathType Leaf)) {
+                Clear-ReadOnly $entry.backup
+                Remove-Item -LiteralPath $entry.backup -Force -ErrorAction SilentlyContinue
+            }
+        }
         if ($state.backup_path -and (Test-Path -LiteralPath $state.backup_path -PathType Leaf)) {
             Clear-ReadOnly $state.backup_path
             Remove-Item -LiteralPath $state.backup_path -Force -ErrorAction SilentlyContinue
         }
         Write-Log 'Von uns installierte REPENTOGON-Dateien entfernt (Urzustand wiederhergestellt).'
+    } elseif ($state -and $state.patched_files -and @($state.patched_files).Count -gt 0) {
+        foreach ($entry in @($state.patched_files)) {
+            if (-not $entry.backup -or -not (Test-Path -LiteralPath $entry.backup -PathType Leaf)) { continue }
+            if ((Get-Sha256 $entry.backup) -ne $entry.original_sha256) {
+                throw "Gesicherte Datei hat unerwarteten Hash - Abbruch: $($entry.name)"
+            }
+            Clear-ReadOnly $entry.target
+            if ((Get-Sha256 $entry.target) -ne $entry.original_sha256) {
+                Copy-FileWithRetry $entry.backup $entry.target
+                if ((Get-Sha256 $entry.target) -ne $entry.original_sha256) {
+                    throw "Original konnte nicht wiederhergestellt werden: $($entry.name)"
+                }
+            }
+            Clear-ReadOnly $entry.backup
+            Remove-Item -LiteralPath $entry.backup -Force
+            Write-Log "Original wiederhergestellt: $($entry.name)"
+        }
     } elseif ($state -and $state.dll_path -and $state.backup_path -and (Test-Path -LiteralPath $state.backup_path -PathType Leaf)) {
         $backupHash = Get-Sha256 $state.backup_path
         if ($backupHash -ne $state.original_dll_sha256) { throw 'Gesicherte Original-DLL hat unerwarteten Hash - Abbruch.' }

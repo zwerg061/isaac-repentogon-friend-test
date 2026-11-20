@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.0.15 - final: matching ZHL DLL trio from one build
+
+- The launcher validates that `zhlLoader.dll`, `libzhl.dll` and
+  `zhlREPENTOGON.dll` report the same version. Replacing only the last one
+  caused "not aligned on the same version" and "Unable to force REPENTOGON update".
+- The setup now embeds and applies the **complete matching trio** from the
+  working sandbox build: zhlLoader `A2E79A8B…`, libzhl `C6ABD6D9…`,
+  zhlREPENTOGON `79B85546…`. Each file gets its own `.orig` backup and is
+  restored exactly on uninstall.
+- `Restore-RepentogonExe()` recovers `Repentogon\isaac-ng.exe` from its `.bak`
+  if a failed force update renamed it.
+- Log-verified (23:31): all three DLLs identified as 1.1.3, installation
+  "valid", injector started - no version mismatch, no force update.
+
 ## 0.0.15 - final: sandbox launcher config, auto-update lock, safe start
 
 - Global `%USERPROFILE%\Documents\My Games\repentogon_launcher.ini` is backed up
