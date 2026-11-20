@@ -7,6 +7,9 @@ if (-not (Test-Path -LiteralPath $setup -PathType Leaf)) { throw "Setup fehlt: $
 
 $script:AllFixtures = @()
 $script:AllRuns = @()
+# Keep all test artifacts under one fixed staging root (single AV exclusion).
+$script:UiTestRoot = Join-Path $env:LOCALAPPDATA 'IsaacModSync\staging\setup-ui-tests'
+New-Item -ItemType Directory -Force -Path $script:UiTestRoot | Out-Null
 
 if (-not ('SetupUi' -as [type])) {
     Add-Type -TypeDefinition @'
@@ -22,6 +25,8 @@ public static class SetupUi {
     public static extern IntPtr SendMessagePtr(IntPtr h, uint msg, IntPtr w, IntPtr l);
     [DllImport("user32.dll", CharSet=CharSet.Unicode, EntryPoint="GetWindowTextW")]
     public static extern int GetWindowText(IntPtr h, StringBuilder text, int count);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode, EntryPoint="GetClassNameW")]
+    public static extern int GetClassName(IntPtr h, StringBuilder text, int count);
     [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr lParam);
     public delegate bool EnumProc(IntPtr h, IntPtr lParam);
 }
@@ -71,8 +76,69 @@ function Close-Setup([IntPtr]$Window, $Process) {
     if ($Process -and -not $Process.HasExited) { Stop-Process -Id $Process.Id -Force -ErrorAction SilentlyContinue }
 }
 
+function Get-TestDialogs {
+    $found = @()
+    $callback = [SetupUi+EnumProc]{
+        param([IntPtr]$Handle, [IntPtr]$Param)
+        $class = New-Object System.Text.StringBuilder 128
+        [void][SetupUi]::GetClassName($Handle, $class, $class.Capacity)
+        if ($class.ToString() -ne '#32770') { return $true }
+        $title = New-Object System.Text.StringBuilder 512
+        [void][SetupUi]::GetWindowText($Handle, $title, $title.Capacity)
+        $text = $title.ToString()
+        if ($text -in @('Patch', 'Fertig', 'Installationsfehler', 'Ordner fehlt', 'Dateien vorhanden', 'Fehler')) {
+            $script:TestDialogHandles += $Handle
+        }
+        return $true
+    }
+    $script:TestDialogHandles = @()
+    [void][SetupUi]::EnumWindows($callback, [IntPtr]::Zero)
+    return @($script:TestDialogHandles)
+}
+
+function Close-TestDialogs {
+    foreach ($dialog in @(Get-TestDialogs)) {
+        [void][SetupUi]::SendMessagePtr($dialog, $WM_CLOSE, [IntPtr]::Zero, [IntPtr]::Zero)
+    }
+}
+
+function Start-DialogWatcher([int]$Seconds) {
+    # Background job closes every simulated error/success MessageBox so none
+    # remains on the desktop after the test.
+    return Start-Job -ScriptBlock {
+        param($Duration)
+        Add-Type -TypeDefinition @'
+using System; using System.Runtime.InteropServices; using System.Text;
+public static class DialogCloser {
+    public delegate bool EnumProc(IntPtr h, IntPtr l);
+    [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr l);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr h, StringBuilder s, int n);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode, EntryPoint="GetWindowTextW")] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+    [DllImport("user32.dll", EntryPoint="SendMessageW")] public static extern IntPtr SendMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
+}
+'@
+        $deadline = (Get-Date).AddSeconds($Duration)
+        while ((Get-Date) -lt $deadline) {
+            $handles = @()
+            $cb = [DialogCloser+EnumProc]{
+                param($h, $l)
+                $c = New-Object System.Text.StringBuilder 128
+                [void][DialogCloser]::GetClassName($h, $c, $c.Capacity)
+                if ($c.ToString() -ne '#32770') { return $true }
+                $t = New-Object System.Text.StringBuilder 512
+                [void][DialogCloser]::GetWindowText($h, $t, $t.Capacity)
+                if ($t.ToString() -in @('Patch','Fertig','Installationsfehler','Ordner fehlt','Dateien vorhanden','Fehler')) { $script:handles += $h }
+                return $true
+            }
+            [void][DialogCloser]::EnumWindows($cb, [IntPtr]::Zero)
+            foreach ($h in @($script:handles)) { [void][DialogCloser]::SendMessage($h, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) }
+            Start-Sleep -Milliseconds 120
+        }
+    } -ArgumentList $Seconds
+}
+
 function New-Fixture([string]$Tag) {
-    $fixture = Join-Path ([IO.Path]::GetTempPath()) ("setup-ui-$Tag-" + [Guid]::NewGuid().ToString('N'))
+    $fixture = Join-Path $script:UiTestRoot ("setup-ui-$Tag-" + [Guid]::NewGuid().ToString('N'))
     $script:AllFixtures += $fixture
     $isaac = Join-Path $fixture 'isaac'
     $tools = Join-Path $fixture 'tools'
@@ -106,6 +172,8 @@ $oldTestRoot = $env:ISAAC_MODSYNC_TEST_ISAAC_ROOT
 $oldNoLaunch = $env:ISAAC_MODSYNC_NO_LAUNCH
 $oldTestZip = $env:ISAAC_MODSYNC_TEST_REPENTOGON_ZIP
 $oldLogPath = $env:ISAAC_MODSYNC_LOG_PATH
+$oldStaging = $env:ISAAC_MODSYNC_TEST_STAGING_ROOT
+$dialogWatcher = Start-DialogWatcher 300
 
 try {
     # Sequence A: click "Patch aktivieren" directly, without installing first.
@@ -126,6 +194,8 @@ try {
         }
         $log = Join-Path $oldLocal 'IsaacModSync\install.log'
         if (-not (Test-Path -LiteralPath $log -PathType Leaf)) { throw 'install.log fehlt.' }
+        $staging = Join-Path $env:LOCALAPPDATA 'IsaacModSync\staging'
+        if (-not (Test-Path -LiteralPath $staging -PathType Container)) { throw 'Fester Staging-Ordner fehlt.' }
         Write-Output 'PASS: direkter Klick auf Patch aktivieren installiert Tools und patched'
     } finally { Close-Setup $run.Window $run.Process }
 
@@ -185,26 +255,37 @@ public static class Dlg { [DllImport("user32.dll", CharSet=CharSet.Unicode)] pub
 
     Write-Output 'ALL setup click-order UI tests passed.'
 } finally {
+    # Close the dialog watcher first, then any popup that is still open.
+    if ($dialogWatcher) {
+        try { Stop-Job $dialogWatcher -ErrorAction SilentlyContinue; Remove-Job $dialogWatcher -Force -ErrorAction SilentlyContinue } catch { }
+    }
+    try { Close-TestDialogs } catch { }
+
     # Close every window/process this test started, even on a partial failure.
     foreach ($run in @($script:AllRuns)) {
         try { Close-Setup $run.Window $run.Process } catch { }
     }
+    try { Close-TestDialogs } catch { }
+
     # Remove every fixture directory, including ones created before a failure.
     foreach ($fixture in @($script:AllFixtures)) {
         if ($fixture -and (Test-Path -LiteralPath $fixture)) {
             try { Remove-Item -LiteralPath $fixture -Recurse -Force -ErrorAction Stop } catch { }
         }
     }
-    # Also sweep older leftovers from previous interrupted runs.
-    Get-ChildItem ([IO.Path]::GetTempPath()) -Directory -Filter 'setup-ui-*' -ErrorAction SilentlyContinue |
-        ForEach-Object { try { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction Stop } catch { } }
+    # Sweep leftovers both in the fixed staging root and in old %TEMP% paths.
+    foreach ($parent in @($script:UiTestRoot, ([IO.Path]::GetTempPath()))) {
+        Get-ChildItem $parent -Directory -Filter 'setup-ui-*' -ErrorAction SilentlyContinue |
+            ForEach-Object { try { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction Stop } catch { } }
+    }
 
     # Restore the environment exactly: never leave a test hook behind.
     foreach ($entry in @(
         @{ Name = 'ISAAC_MODSYNC_TEST_ISAAC_ROOT'; Value = $oldTestRoot },
         @{ Name = 'ISAAC_MODSYNC_NO_LAUNCH'; Value = $oldNoLaunch },
         @{ Name = 'ISAAC_MODSYNC_TEST_REPENTOGON_ZIP'; Value = $oldTestZip },
-        @{ Name = 'ISAAC_MODSYNC_LOG_PATH'; Value = $oldLogPath }
+        @{ Name = 'ISAAC_MODSYNC_LOG_PATH'; Value = $oldLogPath },
+        @{ Name = 'ISAAC_MODSYNC_TEST_STAGING_ROOT'; Value = $oldStaging }
     )) {
         if ($null -eq $entry.Value -or $entry.Value -eq '') {
             Remove-Item -Path ("Env:" + $entry.Name) -ErrorAction SilentlyContinue

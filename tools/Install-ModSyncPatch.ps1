@@ -40,6 +40,14 @@ function Write-InstallLog([string]$Text) {
     } catch { }
 }
 $script:StatePath = Join-Path $env:LOCALAPPDATA 'IsaacModSync\permanent-patch.json'
+# Fixed staging root: antivirus users only need one exclusion instead of a new
+# random %TEMP% folder on every run.
+$script:StagingRoot = if ($env:ISAAC_MODSYNC_TEST_STAGING_ROOT) {
+    $env:ISAAC_MODSYNC_TEST_STAGING_ROOT
+} else {
+    Join-Path $env:LOCALAPPDATA 'IsaacModSync\staging'
+}
+try { New-Item -ItemType Directory -Force -Path $script:StagingRoot | Out-Null } catch { }
 $script:UninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\IsaacModSyncFriendTest'
 $script:StartMenuFolder = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Isaac ModSync Friend Test'
 $script:CompanionName = 'SteamModProfileBridge.exe'
@@ -272,8 +280,18 @@ function Install-Repentogon([string]$Root) {
         $asset = $release.assets | Where-Object { $_.name -eq 'REPENTOGON.zip' } | Select-Object -First 1
         if (-not $asset) { $asset = $release.assets | Where-Object { $_.name -like '*.zip' } | Select-Object -First 1 }
         if (-not $asset) { throw 'REPENTOGON-Release enthaelt kein ZIP.' }
-        $zipPath = Join-Path ([IO.Path]::GetTempPath()) ('isaac-rgon-' + [Guid]::NewGuid().ToString('N') + '.zip')
-        Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zipPath -UseBasicParsing
+        $zipPath = Join-Path $script:StagingRoot 'REPENTOGON.zip'
+        $stagingOld = Rename-ExistingFile $zipPath
+        try {
+            Invoke-WithRetry {
+                Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zipPath -UseBasicParsing -ErrorAction Stop
+            } "Download nach $zipPath"
+        } catch {
+            Restore-OldFile $stagingOld $zipPath
+            throw
+        }
+        Remove-OldFile $stagingOld
+        Write-Log "Staging-ZIP: $zipPath"
     }
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $archive = [IO.Compression.ZipFile]::OpenRead($zipPath)
@@ -303,7 +321,7 @@ function Install-Repentogon([string]$Root) {
         }
     } finally {
         $archive.Dispose()
-        if (-not $skipDownload) { Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue }
+        # Keep the ZIP in the fixed staging folder for reuse / one AV exclusion.
     }
     if (-not (Test-RepentogonInstalled $Root)) { throw 'REPENTOGON-Installation nach dem Entpacken unvollstaendig.' }
     Write-Log "REPENTOGON $($release.tag_name) installiert."

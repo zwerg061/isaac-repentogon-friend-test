@@ -1,7 +1,13 @@
 # Changelog
 
-## 0.0.11 - rename-before-write for antivirus / file-lock safety
+## 0.0.11 - rename-before-write, fixed staging and no leftover test popups
 
+- Downloaded `REPENTOGON.zip` is staged in the single fixed folder
+  `%LOCALAPPDATA%\IsaacModSync\staging` instead of a random `%TEMP%` directory.
+  Antivirus users only need one exclusion. The ZIP is kept there for reuse.
+- UI test fixtures and their cleanup also live under that staging root. A
+  background dialog watcher closes the simulated error/success MessageBox, and
+  the final cleanup removes every window, folder and injected env variable.
 - Existing target files are now renamed to `<name>.old.<timestamp>` before any
   `ExtractToFile` or `Copy-Item`. Writing to the fresh target path avoids the
   remaining `UnauthorizedAccessException` even when a scanner holds the old
