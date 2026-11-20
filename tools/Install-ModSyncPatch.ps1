@@ -247,7 +247,7 @@ function Read-State {
     catch { throw "Statusdatei unlesbar: $script:StatePath" }
 }
 
-function Get-SafeZipPath([string]$Name) {
+function Get-SafeZipPath([string]$Name, [string]$Base) {
     $normalized = $Name.Replace('\', '/')
     if ($normalized.StartsWith('/')) { return $null }
     $parts = @()
@@ -257,7 +257,7 @@ function Get-SafeZipPath([string]$Name) {
         $parts += $part
     }
     if ($parts.Count -eq 0) { return $null }
-    return (Join-Path $Root ($parts -join '\'))
+    return (Join-Path $Base ($parts -join '\'))
 }
 
 function Install-Repentogon([string]$Root) {
@@ -289,34 +289,46 @@ function Install-Repentogon([string]$Root) {
         Write-Log "Staging-ZIP: $zipPath"
     }
     Add-Type -AssemblyName System.IO.Compression.FileSystem
+    # Extract into a fresh staging subfolder first. The game directory is only
+    # ever written via Copy-FileWithRetry, which renames an existing DLL aside
+    # before copying - an antivirus lock on the old file cannot block that.
+    $extractRoot = Join-Path $script:StagingRoot ('extract-' + [DateTime]::UtcNow.ToString('yyyyMMddHHmmssfff'))
+    New-Item -ItemType Directory -Force -Path $extractRoot | Out-Null
     $archive = [IO.Compression.ZipFile]::OpenRead($zipPath)
     $installed = @()
     try {
         foreach ($entry in $archive.Entries) {
-            $relative = Get-SafeZipPath $entry.FullName
-            if (-not $relative) { continue }
+            $source = Get-SafeZipPath $entry.FullName $extractRoot
+            if (-not $source) { continue }
             if ($entry.FullName.EndsWith('/')) {
-                New-Item -ItemType Directory -Force -Path $relative | Out-Null
+                New-Item -ItemType Directory -Force -Path $source | Out-Null
                 continue
             }
-            $parent = Split-Path -Parent $relative
+            $parent = Split-Path -Parent $source
             if ($parent) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
-            $target = $relative
-            $old = Rename-ExistingFile $target
+            Invoke-WithRetry {
+                [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $source, $true)
+            } "Entpacken nach $source"
+
+            $relative = $source.Substring($extractRoot.Length).TrimStart('\')
+            $target = Join-Path $Root $relative
+            $targetParent = Split-Path -Parent $target
+            if ($targetParent) { New-Item -ItemType Directory -Force -Path $targetParent | Out-Null }
             try {
-                Invoke-WithRetry {
-                    [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $target, $false)
-                } "Entpacken von $target"
+                Copy-FileWithRetry $source $target
             } catch {
-                Restore-OldFile $old $target
+                if ([IO.Path]::GetFileName($target) -eq 'zhlREPENTOGON.dll') {
+                    throw 'Antivirus (z. B. Sophos) blockiert zhlREPENTOGON.dll – bitte den Isaac-Ordner als Ausnahme hinzufügen.'
+                }
                 throw
             }
-            Remove-OldFile $old
-            $installed += ($relative.Substring($Root.Length).TrimStart('\'))
+            $installed += $relative
         }
     } finally {
         $archive.Dispose()
-        # Keep the ZIP in the fixed staging folder for reuse / one AV exclusion.
+        try { Remove-Item -LiteralPath $extractRoot -Recurse -Force -ErrorAction Stop }
+        catch { Write-Log "Staging-Ordner bleibt bis zum naechsten Lauf: $extractRoot" }
+        # Keep the downloaded ZIP in the fixed staging folder for reuse / one AV exclusion.
     }
     if (-not (Test-RepentogonInstalled $Root)) { throw 'REPENTOGON-Installation nach dem Entpacken unvollstaendig.' }
     Write-Log "REPENTOGON $($release.tag_name) installiert."

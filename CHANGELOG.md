@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.0.12 - final XML: staged extraction and rename-before-write for every file
+
+- `Install-ModSyncPatch.ps1` no longer calls `ExtractToFile` with the game
+  directory as destination. The ZIP is extracted into a fresh subfolder under
+  `%LOCALAPPDATA%\IsaacModSync\staging`, and **every** file - including
+  `zhlREPENTOGON.dll` - is copied into Isaac via `Copy-FileWithRetry`, which
+  renames any existing target to `<name>.old.<timestamp>` first.
+- If that still fails for `zhlREPENTOGON.dll`, the error is now the explicit
+  German message: „Antivirus (z. B. Sophos) blockiert zhlREPENTOGON.dll – bitte
+  den Isaac-Ordner als Ausnahme hinzufügen."
+
 ## 0.0.12 - removed hidden test-path overrides from production
 
 - `FriendTestSetup.cpp::FindIsaacRoot()` no longer reads
