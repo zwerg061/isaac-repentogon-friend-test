@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.0.14 - hotfix: do not overwrite PowerShell's read-only $PID
+
+- `Install-ModSyncPatch.ps1::Show-GameWindow` used `$pid` as the callback
+  variable for `GetWindowThreadProcessId`. PowerShell's automatic `$PID` is
+  read-only, so the assignment threw a `SessionStateUnauthorizedAccessException`.
+  Renamed to `$procId` (and `$targetPid` where applicable). No behaviour change.
+
 ## 0.0.13 - sandbox parity: patch the loaded DLL and set LaunchMode = 0
 
 - Root cause of "Change the Launch Mode to Vanilla ... to play Online":

@@ -434,9 +434,9 @@ public static class Win32Window {
 '@
     }
     [Win32Window]::EnumWindows({ param($hWnd, $lParam)
-        $pid = 0
-        [void][Win32Window]::GetWindowThreadProcessId($hWnd, [ref]$pid)
-        if ($pid -eq $GamePid) { [void][Win32Window]::ShowWindow($hWnd, 5) }
+        $procId = 0
+        [void][Win32Window]::GetWindowThreadProcessId($hWnd, [ref]$procId)
+        if ($procId -eq $GamePid) { [void][Win32Window]::ShowWindow($hWnd, 5) }
         return $true
     }, [IntPtr]::Zero) | Out-Null
 }
