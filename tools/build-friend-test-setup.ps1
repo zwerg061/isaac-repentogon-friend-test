@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Builds a single-file setup EXE containing only Patch.exe and the friend-test guide.
 #>
@@ -21,9 +21,9 @@ if (-not (Test-Path -LiteralPath $vcvars)) { throw "vcvars32.bat nicht gefunden:
 if (-not (Test-Path -LiteralPath $patcherSource)) { throw "Patch-Quelle fehlt: $patcherSource" }
 if (-not (Test-Path -LiteralPath $installerSource)) { throw "Setup-Quelle fehlt: $installerSource" }
 if (-not (Test-Path -LiteralPath $guideSource)) { throw "Anleitung fehlt: $guideSource" }
-if (-not (Test-Path -LiteralPath $modsyncSource)) { throw "Mod-Prüfer fehlt: $modsyncSource" }
+if (-not (Test-Path -LiteralPath $modsyncSource)) { throw "Mod-PrÃ¼fer fehlt: $modsyncSource" }
 if ((Test-Path -LiteralPath $setupExe) -and -not $Force) {
-    throw "Ausgabedatei existiert bereits; wird nicht überschrieben: $setupExe (mit -Force ausdrücklich ersetzen)"
+    throw "Ausgabedatei existiert bereits; wird nicht Ã¼berschrieben: $setupExe (mit -Force ausdrÃ¼cklich ersetzen)"
 }
 
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
@@ -47,8 +47,8 @@ IDR_GUIDE RCDATA "setup-freundestest-de.txt"
 IDR_MODSYNC RCDATA "modsync.py"
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 0,0,1,0
- PRODUCTVERSION 0,0,1,0
+ FILEVERSION 0,0,2,0
+ PRODUCTVERSION 0,0,2,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0
  FILEOS 0x40004L
@@ -61,11 +61,11 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Experimental community tool\0"
             VALUE "FileDescription", "Isaac REPENTOGON Friend Test Setup\0"
-            VALUE "FileVersion", "0.0.1.0\0"
+            VALUE "FileVersion", "0.0.2.0\0"
             VALUE "InternalName", "Isaac-Freund-Test-Setup\0"
             VALUE "OriginalFilename", "Isaac-Freund-Test-Setup.exe\0"
             VALUE "ProductName", "Isaac REPENTOGON Friend Test\0"
-            VALUE "ProductVersion", "0.0.1\0"
+            VALUE "ProductVersion", "0.0.2\0"
         END
     END
     BLOCK "VarFileInfo"
@@ -79,7 +79,7 @@ $cmd = @(
     "call `"$vcvars`" >nul",
     "cd /d `"$stage`"",
     'rc /nologo FriendTestSetup.rc',
-    "cl /nologo /W4 /O2 /MT /EHsc /utf-8 /DUNICODE /D_UNICODE `"$installerSource`" FriendTestSetup.res /Fo:`"$stage\FriendTestSetup.obj`" /Fe:`"$setupExe`" /link /SUBSYSTEM:WINDOWS user32.lib gdi32.lib shell32.lib ole32.lib comctl32.lib"
+    "cl /nologo /W4 /O2 /MT /EHsc /utf-8 /DUNICODE /D_UNICODE `"$installerSource`" FriendTestSetup.res /Fo:`"$stage\FriendTestSetup.obj`" /Fe:`"$setupExe`" /link /SUBSYSTEM:WINDOWS /MANIFEST:EMBED /MANIFESTUAC:`"level='asInvoker' uiAccess='false'`" user32.lib gdi32.lib shell32.lib ole32.lib comctl32.lib"
 ) -join ' && '
 cmd.exe /c $cmd
 if ($LASTEXITCODE -ne 0) { throw "Setup-EXE-Build fehlgeschlagen (Exit $LASTEXITCODE)." }

@@ -151,9 +151,9 @@ static void Install(HWND owner) {
     UpdateInstalledButtons();
     MessageBoxW(owner,
         L"Installation abgeschlossen.\n\n"
-        L"Patch.exe, modsync.py und die Anleitung wurden installiert. Patch.exe patcht nur eine "
-        L"erkannte lokale REPENTOGON-Installation und bietet Zur\u00FCcksetzen an.\n\n"
-        L"Es wurden keine Spiel-Dateien, REPENTOGON-Dateien oder Mods mitgeliefert.",
+        L"Patch.exe, modsync.py und die Anleitung wurden installiert.\n"
+        L"Patch.exe sichert die vorhandenen Spiel-Dateien und bietet Zur\u00FCcksetzen an.\n\n"
+        L"Keine Spiel-EXE, REPENTOGON-Binaries, Workshop-Mods, Saves oder Steam-Zugangsdaten sind enthalten.",
         L"Fertig", MB_ICONINFORMATION);
 }
 
@@ -194,7 +194,7 @@ static LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPA
             OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
             DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
 
-        HWND header = CreateWindowExW(0, L"STATIC", L"Isaac Repentogon Freund-Test – Setup v0.0.1",
+        HWND header = CreateWindowExW(0, L"STATIC", L"Isaac Repentogon Freund-Test – Setup v0.0.2",
             WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, window, (HMENU)1101, g_instance, nullptr);
         HWND warning = CreateWindowExW(0, L"STATIC",
             L"Installiert nur Patch.exe und eine Anleitung.\n"
@@ -204,9 +204,9 @@ static LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPA
             WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 0, 0, 0, 0, window, (HMENU)IDC_PATH, g_instance, nullptr);
         HWND browse = CreateWindowExW(0, L"BUTTON", L"Durchsuchen...",
             WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window, (HMENU)IDC_BROWSE, g_instance, nullptr);
-    HWND contents = CreateWindowExW(0, L"STATIC",
-            L"Enthalten: Patch.exe (Pr\u00FCfen / Patch anwenden / Zur\u00FCcksetzen), modsync.py und\n"
-            L"Anleitung. Keine Spiel-, Steam-, REPENTOGON- oder Mod-Dateien.",
+        HWND contents = CreateWindowExW(0, L"STATIC",
+            L"Enthalten: Patch.exe (Pr\u00FCfen / Patch / Zur\u00FCcksetzen), gepr\u00FCfte REPENTOGON-1.1.3-Men\u00FC-DLL,\n"
+            L"modsync.py und Anleitung. Keine Isaac-EXE, Workshop-Mods, Saves oder Steam-Daten.",
             WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, window, (HMENU)1103, g_instance, nullptr);
         g_install = CreateWindowExW(0, L"BUTTON", L"Installieren",
             WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON, 0, 0, 0, 0, window, (HMENU)IDC_INSTALL, g_instance, nullptr);
@@ -264,7 +264,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     RECT rect{ 0, 0, 680, 370 };
     AdjustWindowRect(&rect, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, FALSE);
     HWND window = CreateWindowExW(0, cls.lpszClassName,
-        L"Isaac Repentogon Freund-Test Setup v0.0.1 (experimentell)",
+        L"Isaac Repentogon Freund-Test Setup v0.0.2 (experimentell)",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
         CW_USEDEFAULT, CW_USEDEFAULT, rect.right - rect.left, rect.bottom - rect.top,
         nullptr, nullptr, instance, nullptr);

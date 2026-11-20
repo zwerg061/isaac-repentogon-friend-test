@@ -1,16 +1,23 @@
-// ---------------------------------------------------------------------------
-//  Repentogon Online Unlock v0.0.1
+﻿// ---------------------------------------------------------------------------
+//  Repentogon Online Unlock v0.0.2
 //
 //  Kleines eigenstaendiges Windows-Tool (kein .NET, keine Installation):
-//  wendet den experimentellen Online-Co-op-Patch fuer REPENTOGON an.
+//  wendet den experimentellen Online-Patch fuer REPENTOGON an.
 //
-//  Es wendet zwei Patches an (beide reversibel, mit Backup):
+//  Es patcht die vorhandenen Dateien direkt (kein Austausch, alles reversibel
+//  mit Backup):
 //    1) Repentogon\isaac-ng.exe
 //       Coop-Patch aus Isaac-Online-Modded (xADDBx): die Mod-Bann-Pruefung
 //       der Engine wird neutralisiert.
-//    2) Repentogon\zhlREPENTOGON.dll
-//       Repentogon setzt in ModManager::ListMods hart _modBanStatus = 3.
-//       Der Patch setzt den gespeicherten Wert auf 0 (Offset 0x2025C).
+//    2) Repentogon\zhlREPENTOGON.dll  (drei Byte-Patches in der 1.1.3-Datei)
+//       a) MenuManager::Update setzt die Menue-ID nur noch fuer Daily Run (4)
+//          zurueck, statt fuer 4/19/17/18/21.
+//       b) ASMPatchOnlineSelection wird mit RET uebersprungen, damit der
+//          ONLINE-Eintrag nicht auf Daily Run gezwungen wird.
+//       c) ModManager::ListMods: _modBanStatus wird 0 statt 3.
+//
+//  Akzeptiert werden ausschliesslich die exakten SHA-256 der geprueften
+//  REPENTOGON-1.1.3-Dateien; alles andere wird unveraendert abgelehnt.
 //
 //  Build: tools\build-gui.ps1  (MSVC, statische CRT -> einzelne EXE)
 // ---------------------------------------------------------------------------
@@ -24,18 +31,24 @@
 #define WIN32_LEAN_AND_MEAN
 
 #include <windows.h>
+#include <bcrypt.h>
+#include <commdlg.h>
 #include <commctrl.h>
 #include <shlobj.h>
 #include <shellapi.h>
 #include <tlhelp32.h>
 #include <string>
 #include <vector>
+#include <sstream>
+#include <iomanip>
 #include <cstdarg>
 #include <cstdio>
 
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "shell32.lib")
+#pragma comment(lib, "comdlg32.lib")
+#pragma comment(lib, "bcrypt.lib")
 #pragma comment(linker, "/manifestdependency:\"type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 
 // --- Steuerelement-IDs ------------------------------------------------------
@@ -55,7 +68,9 @@ static HBRUSH g_bg = nullptr;
 
 static std::wstring gInstall;      // ...\The Binding of Isaac Rebirth
 static int g_exeState = -1;        // 0 = original, 1 = gepatcht, 2 = unbekannt
-static int g_dllState = -1;        // 0 = ban 3, 1 = ban 0, 2 = unbekannt
+static int g_dllState = -1;        // 0 = patch fehlt, 1 = vollständig gepatcht, 2 = unbekannt
+static bool g_cli = false;         // --check/--apply/--revert ohne Fenster
+static FILE* g_cliLog = nullptr;   // CLI-Protokoll: Patch-cli.log neben der EXE
 
 // --- Byte-Pattern -----------------------------------------------------------
 static const unsigned char kCoopOrig[] = {
@@ -69,6 +84,30 @@ static const unsigned char kCoopPatched[] = {
     0x00,0x00,0x00
 };
 static const size_t kCoopLen = sizeof(kCoopOrig);
+
+// zhlREPENTOGON.dll: the menu fix is patched into the existing, exact RE_PENTOGON
+// 1.1.3 file instead of shipping a rebuilt DLL. Only these hashes are accepted.
+static const wchar_t kUpstreamDllSha256[] = L"5579B2F0CCB83C695F96AF4E1C657F1F3A4E5B24441B4DAC81D9289043CB3CC8"; // untouched 1.1.3
+static const wchar_t kV001DllSha256[]     = L"16BB35D3478B9ADAEA307A451FB7591DD266F4B2176094EA563683C9F79F64F9"; // v0.0.1 ban patch
+static const wchar_t kFullDllSha256[]     = L"019EBB3CD5532C91CA6D1AE85AA26451C1A54FB4236C83CD48E302C098C031FB"; // ban + menu fix
+
+// MenuManager::Update resets the menu ID. Original: 4, 19, 17, 18, 21.
+// Patched form keeps the comparison only for 4, so ONLINE and the lobby menus stay open.
+static const unsigned char kMenuResetOrig[] = {
+    0x83,0xF8,0x04, 0x74,0x14,
+    0x83,0xF8,0x13, 0x74,0x0F,
+    0x83,0xF8,0x11, 0x74,0x0A,
+    0x83,0xF8,0x12, 0x74,0x05,
+    0x83,0xF8,0x15, 0x75,0x07,
+    0xC7,0x42,0x40,0x01,0x00,0x00,0x00
+};
+static const size_t kMenuResetLen = sizeof(kMenuResetOrig);
+static const size_t kMenuResetImmOffsets[] = { 7, 12, 17, 22 };
+
+// RVA of ASMPatchOnlineSelection in the tested 1.1.3 DLL. It forces the ONLINE
+// cursor onto "Daily Run" and blocks up/down. Patching its first byte to RET
+// leaves the option selectable.
+static const unsigned long kOnlineSelectionRva = 0x1DBDC0;
 
 // --- Datei-Helfer -----------------------------------------------------------
 static bool ReadBytes(const std::wstring& path, std::vector<unsigned char>& out) {
@@ -130,6 +169,125 @@ static long FindBanStore(const std::vector<unsigned char>& d) {
         return (long)(i + 14);
     }
     return -1;
+}
+
+static unsigned long ReadU32(const unsigned char* p) {
+    unsigned long v = 0;
+    memcpy(&v, p, 4);
+    return v;
+}
+
+static unsigned short ReadU16(const unsigned char* p) {
+    unsigned short v = 0;
+    memcpy(&v, p, 2);
+    return v;
+}
+
+// RVA -> Datei-Offset anhand der PE-Sektionskopfdaten.
+static long RvaToFileOffset(const std::vector<unsigned char>& d, unsigned long rva) {
+    if (d.size() < 0x40 || d[0] != 'M' || d[1] != 'Z') return -1;
+    const unsigned long peOff = ReadU32(d.data() + 0x3C);
+    if (peOff + 0x18 > d.size()) return -1;
+    if (memcmp(d.data() + peOff, "PE\0\0", 4) != 0) return -1;
+    const unsigned short sections = ReadU16(d.data() + peOff + 6);
+    const unsigned short optSize = ReadU16(d.data() + peOff + 20);
+    size_t sec = (size_t)peOff + 24 + optSize;
+    for (unsigned i = 0; i < sections; ++i, sec += 40) {
+        if (sec + 40 > d.size()) return -1;
+        const unsigned long vsize = ReadU32(d.data() + sec + 8);
+        const unsigned long vaddr = ReadU32(d.data() + sec + 12);
+        const unsigned long rawSize = ReadU32(d.data() + sec + 16);
+        const unsigned long rawPtr = ReadU32(d.data() + sec + 20);
+        if (rva < vaddr || rva >= vaddr + vsize) continue;
+        const unsigned long delta = rva - vaddr;
+        if (delta >= rawSize) return -1;
+        return (long)((size_t)rawPtr + delta);
+    }
+    return -1;
+}
+
+// Menue-Reset-Filter: nur noch Menue-ID 4 (Daily Run) wird zurueckgesetzt.
+static bool PatchMenuReset(std::vector<unsigned char>& d, long& pos) {
+    const long found = FindPattern(d, kMenuResetOrig, kMenuResetLen);
+    if (found < 0) return false;
+    pos = found;
+    for (size_t i = 0; i < sizeof(kMenuResetImmOffsets) / sizeof(kMenuResetImmOffsets[0]); ++i) {
+        const size_t at = (size_t)found + kMenuResetImmOffsets[i];
+        const unsigned char want = kMenuResetOrig[kMenuResetImmOffsets[i]];
+        if (d[at] != want) return false;
+        d[at] = 4;
+    }
+    return true;
+}
+
+// ASMPatchOnlineSelection: erster Befehl (55 8B EC) wird zu RET.
+static bool PatchOnlineSelection(std::vector<unsigned char>& d, long& pos) {
+    const long at = RvaToFileOffset(d, kOnlineSelectionRva);
+    if (at < 0 || (size_t)at + 3 > d.size()) return false;
+    if (d[at] != 0x55 || d[at+1] != 0x8B || d[at+2] != 0xEC) return false;
+    pos = at;
+    d[at] = 0xC3;
+    return true;
+}
+
+// Mod-Bann-Status 3 -> 0 (bei bereits 0 unveraendert).
+static bool PatchBanStore(std::vector<unsigned char>& d, long& pos) {
+    const long at = FindBanStore(d);
+    if (at < 0) return false;
+    pos = at;
+    d[at] = d[at+1] = d[at+2] = d[at+3] = 0;
+    return true;
+}
+
+static bool Sha256Bytes(const std::vector<unsigned char>& data, std::wstring& result) {
+    if (data.size() > 0xFFFFFFFFu) return false;
+    BCRYPT_ALG_HANDLE algorithm = nullptr;
+    BCRYPT_HASH_HANDLE hash = nullptr;
+    DWORD objectLength = 0, hashLength = 0, bytesWritten = 0;
+    bool ok = false;
+
+    if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) != 0) return false;
+    if (BCryptGetProperty(algorithm, BCRYPT_OBJECT_LENGTH, (PUCHAR)&objectLength,
+                          sizeof(objectLength), &bytesWritten, 0) != 0) goto cleanup;
+    if (BCryptGetProperty(algorithm, BCRYPT_HASH_LENGTH, (PUCHAR)&hashLength,
+                          sizeof(hashLength), &bytesWritten, 0) != 0) goto cleanup;
+
+    {
+        std::vector<UCHAR> object(objectLength);
+        std::vector<UCHAR> digest(hashLength);
+        if (BCryptCreateHash(algorithm, &hash, object.data(), objectLength, nullptr, 0, 0) != 0) goto cleanup;
+        if (BCryptHashData(hash, (PUCHAR)data.data(), (ULONG)data.size(), 0) != 0) goto cleanup;
+        if (BCryptFinishHash(hash, digest.data(), hashLength, 0) != 0) goto cleanup;
+
+        wchar_t hex[65] = L"";
+        for (DWORD i = 0; i < hashLength; ++i) {
+            swprintf_s(hex + i * 2, 3, L"%02X", digest[i]);
+        }
+        result = hex;
+        ok = true;
+    }
+
+cleanup:
+    if (hash) BCryptDestroyHash(hash);
+    if (algorithm) BCryptCloseAlgorithmProvider(algorithm, 0);
+    return ok;
+}
+
+static bool IsUpstreamDllHash(const std::wstring& hash) {
+    return _wcsicmp(hash.c_str(), kUpstreamDllSha256) == 0;
+}
+
+static bool IsV001DllHash(const std::wstring& hash) {
+    return _wcsicmp(hash.c_str(), kV001DllSha256) == 0;
+}
+
+static bool IsFullDllHash(const std::wstring& hash) {
+    return _wcsicmp(hash.c_str(), kFullDllSha256) == 0;
+}
+
+// Jede Datei, aus der ein geprueftes Backup stammen darf.
+static bool IsKnownDllHash(const std::wstring& hash) {
+    return IsUpstreamDllHash(hash) || IsV001DllHash(hash) || IsFullDllHash(hash);
 }
 
 // --- Pfade ------------------------------------------------------------------
@@ -246,11 +404,31 @@ static void Log(const wchar_t* fmt, ...) {
     _vsnwprintf_s(buf, _TRUNCATE, fmt, ap);
     va_end(ap);
 
+    if (!g_hLog) {
+        if (g_cliLog) {
+            fwprintf(g_cliLog, L"%s\n", buf);
+            fflush(g_cliLog);
+        }
+        return;
+    }
+
     std::wstring line = buf;
     line += L"\r\n";
     int len = GetWindowTextLengthW(g_hLog);
     SendMessageW(g_hLog, EM_SETSEL, (WPARAM)len, (LPARAM)len);
     SendMessageW(g_hLog, EM_REPLACESEL, FALSE, (LPARAM)line.c_str());
+}
+
+// Meldungen: im Fenster als Dialog, in der CLI nur ins Protokoll.
+static void Report(const wchar_t* text, const wchar_t* title, UINT flags) {
+    if (g_cli) {
+        if (g_cliLog) {
+            fwprintf(g_cliLog, L"%s: %s\n", title, text);
+            fflush(g_cliLog);
+        }
+        return;
+    }
+    MessageBoxW(nullptr, text, title, flags);
 }
 
 static bool g_backupExe = false, g_backupDll = false;
@@ -299,27 +477,26 @@ static void RefreshStatus(bool verbose) {
 
     if (!ReadBytes(dll, dllBytes)) { SetWindowTextW(g_hStDll, L"DLL:  nicht lesbar"); }
     else {
-        long pos = FindBanStore(dllBytes);
-        if (pos < 0) {
+        std::wstring dllHash;
+        if (!Sha256Bytes(dllBytes, dllHash)) {
             g_dllState = 2;
-            SetWindowTextW(g_hStDll, L"DLL:  unbekannte Version");
-            if (verbose) Log(L"DLL  : Hook-Muster von ModManager::ListMods nicht gefunden.");
+            SetWindowTextW(g_hStDll, L"DLL:  Hash-PrÃ¼fung fehlgeschlagen");
+        } else if (IsFullDllHash(dllHash)) {
+            g_dllState = 1;
+            SetWindowTextW(g_hStDll, L"DLL:  Online-MenÃ¼-Fix + Mod-Bann-Fix aktiv  \x2714");
+            if (verbose) Log(L"DLL  : MenÃ¼-Fix aktiv (SHA-256 geprÃ¼ft).");
+        } else if (IsUpstreamDllHash(dllHash)) {
+            g_dllState = 0;
+            SetWindowTextW(g_hStDll, L"DLL:  REPENTOGON 1.1.3 original; Patch fehlt");
+            if (verbose) Log(L"DLL  : unverÃ¤nderte REPENTOGON 1.1.3; MenÃ¼-Fix fehlt.");
+        } else if (IsV001DllHash(dllHash)) {
+            g_dllState = 0;
+            SetWindowTextW(g_hStDll, L"DLL:  v0.0.1 Ban-Fix; MenÃ¼-Fix fehlt");
+            if (verbose) Log(L"DLL  : alter Mod-Bann-Fix erkannt; MenÃ¼-Fix fehlt.");
         } else {
-            int val = (int)dllBytes[pos] | ((int)dllBytes[pos+1] << 8)
-                    | ((int)dllBytes[pos+2] << 16) | ((int)dllBytes[pos+3] << 24);
-            if (val == 0) {
-                g_dllState = 1;
-                SetWindowTextW(g_hStDll, L"DLL:  gepatcht (Mod-Bann-Status = 0)  \x2714");
-                if (verbose) Log(L"DLL  : gepatcht (Ban-Status 0, Offset 0x%lX).", pos);
-            } else if (val == 3) {
-                g_dllState = 0;
-                SetWindowTextW(g_hStDll, L"DLL:  original (Mod-Bann-Status = 3)");
-            } else {
-                g_dllState = 2;
-                wchar_t buf[128];
-                swprintf_s(buf, L"DLL:  unerwarteter Wert %d", val);
-                SetWindowTextW(g_hStDll, buf);
-            }
+            g_dllState = 2;
+            SetWindowTextW(g_hStDll, L"DLL:  nicht unterstÃ¼tzte REPENTOGON-Datei");
+            if (verbose) Log(L"DLL  : SHA-256 unbekannt (%s); nichts Ã¤ndern.", dllHash.c_str());
         }
     }
 
@@ -329,76 +506,158 @@ static void RefreshStatus(bool verbose) {
 }
 
 // --- Aktionen ---------------------------------------------------------------
-static void DoApply() {
-    if (!IsValidInstall(gInstall)) { MessageBoxW(nullptr, L"Keine g\u00FCltige Repentogon-Installation gew\u00E4hlt.", L"Fehler", MB_ICONERROR); return; }
-    if (GameRunning()) { MessageBoxW(nullptr, L"Das Spiel l\u00E4uft noch. Bitte schlie\u00DFen und erneut versuchen.", L"Spiel l\u00E4uft", MB_ICONWARNING); return; }
-
-    CreateDirectoryW(BackupDir().c_str(), nullptr);
+static bool DoApply() {
+    if (!IsValidInstall(gInstall)) { Report(L"Keine gÃ¼ltige REPENTOGON-Installation gewÃ¤hlt.", L"Fehler", MB_ICONERROR); return false; }
+    if (GameRunning()) { Report(L"Spiel oder Launcher lÃ¤uft noch. Bitte schlieÃŸen und erneut versuchen.", L"Spiel lÃ¤uft", MB_ICONWARNING); return false; }
 
     const std::wstring exe = Join(Join(gInstall, L"Repentogon"), L"isaac-ng.exe");
     const std::wstring dll = Join(Join(gInstall, L"Repentogon"), L"zhlREPENTOGON.dll");
+    const std::wstring backupExe = Join(BackupDir(), L"isaac-ng.exe");
+    const std::wstring backupDll = Join(BackupDir(), L"zhlREPENTOGON.dll");
+    std::vector<unsigned char> exeBytes, dllBytes;
 
-    Log(L"--- Patch anwenden ---");
+    // Fail closed on every input before writing either target file.
+    if (!ReadBytes(exe, exeBytes)) { Log(L"FEHLER: %s nicht lesbar.", exe.c_str()); return false; }
+    const size_t orig = CountPattern(exeBytes, kCoopOrig, kCoopLen);
+    const size_t patched = CountPattern(exeBytes, kCoopPatched, kCoopLen);
+    const bool exeNeedsPatch = orig == 1 && patched == 0;
+    const bool exeAlreadyPatched = patched == 1 && orig == 0;
+    if (!exeNeedsPatch && !exeAlreadyPatched) {
+        Log(L"FEHLER: EXE-Muster passt nicht (orig=%zu, patched=%zu).", orig, patched);
+        Report(L"Unbekannte isaac-ng.exe-Version. Es wurde nichts geÃ¤ndert.", L"Nicht unterstÃ¼tzt", MB_ICONERROR);
+        return false;
+    }
 
-    // 1) EXE
-    std::vector<unsigned char> exeBytes;
-    if (!ReadBytes(exe, exeBytes)) { Log(L"FEHLER: %s nicht lesbar.", exe.c_str()); return; }
-    size_t orig = CountPattern(exeBytes, kCoopOrig, kCoopLen);
-    size_t pat  = CountPattern(exeBytes, kCoopPatched, kCoopLen);
+    if (!ReadBytes(dll, dllBytes)) { Log(L"FEHLER: %s nicht lesbar.", dll.c_str()); return false; }
+    std::wstring dllHash;
+    if (!Sha256Bytes(dllBytes, dllHash)) { Log(L"FEHLER: DLL-SHA-256 konnte nicht berechnet werden."); return false; }
+    const bool dllAlreadyPatched = IsFullDllHash(dllHash);
+    if (!dllAlreadyPatched && !IsUpstreamDllHash(dllHash) && !IsV001DllHash(dllHash)) {
+        Log(L"FEHLER: Nicht unterstÃ¼tzte REPENTOGON-DLL (SHA-256 %s).", dllHash.c_str());
+        Report(L"Diese zhlREPENTOGON.dll gehÃ¶rt nicht zum geprÃ¼ften REPENTOGON-1.1.3-Build. Es wurde nichts geÃ¤ndert.", L"Nicht unterstÃ¼tzt", MB_ICONERROR);
+        return false;
+    }
 
-    if (pat == 1 && orig == 0) {
-        Log(L"EXE  : war bereits gepatcht.");
-    } else if (orig == 1 && pat == 0) {
-        std::wstring bak = Join(BackupDir(), L"isaac-ng.exe");
-        if (!FileExists(bak)) CopyFileW(exe.c_str(), bak.c_str(), FALSE);
-        long pos = FindPattern(exeBytes, kCoopOrig, kCoopLen);
+    // Patch-Ergebnis im Speicher bilden und gegen den geprÃ¼ften Hash abgleichen.
+    std::vector<unsigned char> patchedDll = dllBytes;
+    long menuPos = -1, onlinePos = -1, banPos = -1;
+    if (!dllAlreadyPatched) {
+        if (!PatchMenuReset(patchedDll, menuPos)) {
+            Log(L"FEHLER: MenÃ¼-Reset-Filter (4/19/17/18/21) nicht gefunden.");
+            Report(L"Der erwartete MenÃ¼-Filter in zhlREPENTOGON.dll fehlt. Es wurde nichts geÃ¤ndert.", L"Nicht unterstÃ¼tzt", MB_ICONERROR);
+            return false;
+        }
+        if (!PatchOnlineSelection(patchedDll, onlinePos)) {
+            Log(L"FEHLER: ASMPatchOnlineSelection bei RVA 0x%lX nicht gefunden.", kOnlineSelectionRva);
+            Report(L"Die erwartete Online-Auswahl in zhlREPENTOGON.dll fehlt. Es wurde nichts geÃ¤ndert.", L"Nicht unterstÃ¼tzt", MB_ICONERROR);
+            return false;
+        }
+        if (!PatchBanStore(patchedDll, banPos)) {
+            Log(L"FEHLER: ModManager::ListMods-Signatur fehlt.");
+            Report(L"Das erwartete REPENTOGON-DLL-Muster fehlt. Es wurde nichts geÃ¤ndert.", L"Nicht unterstÃ¼tzt", MB_ICONERROR);
+            return false;
+        }
+        std::wstring resultHash;
+        if (!Sha256Bytes(patchedDll, resultHash) || !IsFullDllHash(resultHash)) {
+            Log(L"FEHLER: Patch-Ergebnis hat unerwarteten SHA-256 (%s).", resultHash.c_str());
+            Report(L"Das Patch-Ergebnis entspricht nicht der geprÃ¼ften Datei. Es wurde nichts geÃ¤ndert.", L"Nicht unterstÃ¼tzt", MB_ICONERROR);
+            return false;
+        }
+    }
+
+    if (!CreateDirectoryW(BackupDir().c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS) {
+        Log(L"FEHLER: Backup-Ordner konnte nicht erstellt werden.");
+        Report(L"Backup-Ordner konnte nicht erstellt werden. Es wurde nichts geÃ¤ndert.", L"Backup-Fehler", MB_ICONERROR);
+        return false;
+    }
+    if (FileExists(backupExe)) {
+        std::vector<unsigned char> backupBytes;
+        if (!ReadBytes(backupExe, backupBytes)
+            || (CountPattern(backupBytes, kCoopOrig, kCoopLen) != 1 && CountPattern(backupBytes, kCoopPatched, kCoopLen) != 1)) {
+            Log(L"FEHLER: Vorhandenes EXE-Backup passt nicht zur unterstÃ¼tzten Version.");
+            Report(L"Das vorhandene EXE-Backup wird nicht Ã¼berschrieben; Version nicht erkannt.", L"Backup-Konflikt", MB_ICONERROR);
+            return false;
+        }
+    }
+    if (FileExists(backupDll)) {
+        std::vector<unsigned char> backupBytes;
+        std::wstring backupHash;
+        if (!ReadBytes(backupDll, backupBytes) || !Sha256Bytes(backupBytes, backupHash)
+            || !IsKnownDllHash(backupHash)) {
+            Log(L"FEHLER: Vorhandenes DLL-Backup ist keine geprÃ¼fte REPENTOGON-1.1.3-Datei.");
+            Report(L"Das vorhandene DLL-Backup wird nicht Ã¼berschrieben; Version nicht erkannt.", L"Backup-Konflikt", MB_ICONERROR);
+            return false;
+        }
+    }
+    bool createdBackupExe = false;
+    if (!FileExists(backupExe)) {
+        if (!CopyFileW(exe.c_str(), backupExe.c_str(), TRUE)) {
+            Log(L"FEHLER: EXE-Backup konnte nicht erstellt werden (Win32 %lu).", GetLastError());
+            Report(L"EXE-Backup konnte nicht erstellt werden. Es wurde nichts geÃ¤ndert.", L"Backup-Fehler", MB_ICONERROR);
+            return false;
+        }
+        createdBackupExe = true;
+    }
+    if (!dllAlreadyPatched && !FileExists(backupDll) && !CopyFileW(dll.c_str(), backupDll.c_str(), TRUE)) {
+        Log(L"FEHLER: DLL-Backup konnte nicht erstellt werden (Win32 %lu).", GetLastError());
+        if (createdBackupExe) DeleteFileW(backupExe.c_str());
+        Report(L"DLL-Backup konnte nicht erstellt werden. Es wurde nichts geÃ¤ndert.", L"Backup-Fehler", MB_ICONERROR);
+        return false;
+    }
+
+    const std::vector<unsigned char> oldExeBytes = exeBytes;
+    const std::vector<unsigned char> oldDllBytes = dllBytes;
+    if (exeNeedsPatch) {
+        const long pos = FindPattern(exeBytes, kCoopOrig, kCoopLen);
+        if (pos < 0) { Log(L"FEHLER: EXE-Signatur verschwand nach der PrÃ¼fung."); return false; }
         memcpy(exeBytes.data() + pos, kCoopPatched, kCoopLen);
-        if (!WriteBytes(exe, exeBytes)) { Log(L"FEHLER: EXE konnte nicht geschrieben werden."); return; }
-        Log(L"EXE  : gepatcht (Offset 0x%lX).", pos);
+        if (!WriteBytes(exe, exeBytes)) {
+            WriteBytes(exe, oldExeBytes);
+            Log(L"FEHLER: EXE konnte nicht geschrieben werden; Wiederherstellung versucht.");
+            return false;
+        }
+        Log(L"EXE  : Coop-Patch angewendet (Offset 0x%lX).", pos);
     } else {
-        Log(L"FEHLER: EXE-Muster passt nicht (orig=%zu, patched=%zu). Falsche Version?", orig, pat);
-        MessageBoxW(nullptr, L"Das erwartete Byte-Muster wurde nicht gefunden.\nVermutlich eine andere Repentogon-Version.\nEs wurde nichts ge\u00E4ndert.", L"Nicht unterst\u00FCtzt", MB_ICONERROR);
-        return;
+        Log(L"EXE  : Coop-Patch war bereits aktiv.");
     }
 
-    // 2) DLL
-    std::vector<unsigned char> dllBytes;
-    if (!ReadBytes(dll, dllBytes)) { Log(L"FEHLER: %s nicht lesbar.", dll.c_str()); return; }
-    long banPos = FindBanStore(dllBytes);
-    if (banPos < 0) {
-        Log(L"FEHLER: DLL-Hook-Muster nicht gefunden.");
-        MessageBoxW(nullptr, L"Das erwartete Muster in zhlREPENTOGON.dll wurde nicht gefunden.\nEs wurde nichts ge\u00E4ndert.", L"Nicht unterst\u00FCtzt", MB_ICONERROR);
-        return;
-    }
-    int val = (int)dllBytes[banPos] | ((int)dllBytes[banPos+1] << 8)
-            | ((int)dllBytes[banPos+2] << 16) | ((int)dllBytes[banPos+3] << 24);
-
-    if (val == 0) {
-        Log(L"DLL  : war bereits gepatcht.");
-    } else if (val == 3) {
-        std::wstring bak = Join(BackupDir(), L"zhlREPENTOGON.dll");
-        if (!FileExists(bak)) CopyFileW(dll.c_str(), bak.c_str(), FALSE);
-        dllBytes[banPos] = dllBytes[banPos+1] = dllBytes[banPos+2] = dllBytes[banPos+3] = 0;
-        if (!WriteBytes(dll, dllBytes)) { Log(L"FEHLER: DLL konnte nicht geschrieben werden."); return; }
-        Log(L"DLL  : gepatcht (Ban-Status 3 -> 0, Offset 0x%lX).", banPos);
+    if (!dllAlreadyPatched) {
+        if (!WriteBytes(dll, patchedDll)) {
+            const DWORD error = GetLastError();
+            if (exeNeedsPatch) WriteBytes(exe, oldExeBytes);
+            Log(L"FEHLER: zhlREPENTOGON.dll konnte nicht geschrieben werden (Win32 %lu).", error);
+            Report(L"Die DLL konnte nicht geschrieben werden. Die EXE wurde nach MÃ¶glichkeit zurÃ¼ckgesetzt; Backups bleiben erhalten.", L"Patch-Fehler", MB_ICONERROR);
+            return false;
+        }
+        std::vector<unsigned char> installedDll;
+        std::wstring installedHash;
+        if (!ReadBytes(dll, installedDll) || !Sha256Bytes(installedDll, installedHash) || !IsFullDllHash(installedHash)) {
+            WriteBytes(dll, oldDllBytes);
+            if (exeNeedsPatch) WriteBytes(exe, oldExeBytes);
+            Log(L"FEHLER: geschriebene DLL stimmt nicht mit dem geprÃ¼ften Ergebnis Ã¼berein; Rollback versucht.");
+            Report(L"Die gepatchte DLL stimmt nicht mit dem geprÃ¼ften Ergebnis Ã¼berein. Rollback wurde versucht.", L"Patch-Fehler", MB_ICONERROR);
+            return false;
+        }
+        Log(L"DLL  : Menue-Reset-Filter gepatcht (Offset 0x%lX).", menuPos);
+        Log(L"DLL  : Online-Auswahl entsperrt (Offset 0x%lX).", onlinePos);
+        Log(L"DLL  : Mod-Bann-Status 3 -> 0 (Offset 0x%lX).", banPos);
     } else {
-        Log(L"FEHLER: unerwarteter Wert %d in der DLL.", val);
-        MessageBoxW(nullptr, L"Die DLL enth\u00E4lt einen unerwarteten Wert.\nEs wurde nichts ge\u00E4ndert.", L"Nicht unterst\u00FCtzt", MB_ICONERROR);
-        return;
+        Log(L"DLL  : MenÃ¼-Fix war bereits aktiv.");
     }
 
-    Log(L"Fertig. Backups: %s", BackupDir().c_str());
+    Log(L"Fertig. Backups f\u00FCr Zur\u00FCcksetzen: %s", BackupDir().c_str());
     Log(L"");
-    Log(L"Online starten: Spiel \u00FCber den Repentogon-Launcher starten,");
-    Log(L"im Hauptmen\u00FC  ~  dr\u00FCcken und  netstart <SteamID>  eingeben.");
+    Log(L"Online starten: Spiel \u00FCber den REPENTOGON-Launcher starten;");
+    Log(L"Online-Men\u00FC Ã¶ffnen, Friend Match sichtbar ausw\u00E4hlen und erst dann bestÃ¤tigen.");
     RefreshStatus(true);
+    return true;
 }
 
-static void DoRevert() {
-    if (GameRunning()) { MessageBoxW(nullptr, L"Das Spiel l\u00E4uft noch. Bitte schlie\u00DFen und erneut versuchen.", L"Spiel l\u00E4uft", MB_ICONWARNING); return; }
+static bool DoRevert() {
+    if (GameRunning()) { Report(L"Das Spiel l\u00E4uft noch. Bitte schlie\u00DFen und erneut versuchen.", L"Spiel l\u00E4uft", MB_ICONWARNING); return false; }
     if (!g_backupExe && !g_backupDll) {
-        MessageBoxW(nullptr, L"Keine Backups gefunden.\nEs wurde nichts ver\u00E4ndert.", L"Zur\u00FCcksetzen", MB_ICONINFORMATION);
-        return;
+        Report(L"Keine Backups gefunden.\nEs wurde nichts ver\u00E4ndert.", L"Zur\u00FCcksetzen", MB_ICONINFORMATION);
+        return false;
     }
 
     Log(L"--- Zur\u00FCcksetzen ---");
@@ -416,6 +675,7 @@ static void DoRevert() {
         else Log(L"FEHLER: DLL konnte nicht wiederhergestellt werden (%lu).", GetLastError());
     }
     RefreshStatus(true);
+    return true;
 }
 
 static void DoPlay() {
@@ -472,7 +732,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                                  OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                                  FIXED_PITCH | FF_MODERN, L"Consolas");
 
-        g_hHead = CreateWindowExW(0, L"STATIC", L"Repentogon Online-Co-op-Patch v0.0.1 (experimentell)",
+        g_hHead = CreateWindowExW(0, L"STATIC", L"Repentogon Online-Patch v0.0.2 (experimentell)",
                                   WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, hwnd, (HMENU)ID_HEAD, nullptr, nullptr);
 
         g_hPath = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
@@ -519,9 +779,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             SetWindowTextW(g_hPath, gInstall.c_str());
         }
 
-        Log(L"Repentogon Online-Co-op-Patch v0.0.1 (experimentell)");
-        Log(L"Wendet zwei Patches an: Coop-Patch (isaac-ng.exe) und");
-        Log(L"Mod-Bann-Status (zhlREPENTOGON.dll). Beides ist umkehrbar.");
+        Log(L"Repentogon Online-Patch v0.0.2 (experimentell)");
+        Log(L"Patcht vorhandene Dateien in place: Coop-Patch (isaac-ng.exe) und");
+        Log(L"drei Byte-Patches in zhlREPENTOGON.dll (1.1.3). Alles ist umkehrbar.");
         Log(L"Hinweis: Ein stabiler Lobby-Start mit Repentogon ist nicht bestaetigt.");
         Log(L"");
         if (gInstall.empty()) Log(L"Keine Installation automatisch gefunden \u2013 bitte \u00FCber \u201EDurchsuchen\u2026\u201C w\u00E4hlen.");
@@ -591,10 +851,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             RefreshStatus(true);
             return 0;
         case ID_APPLY:
-            DoApply();
+            (void)DoApply();
             return 0;
         case ID_REVERT:
-            DoRevert();
+            (void)DoRevert();
             return 0;
         case ID_PLAY:
             DoPlay();
@@ -611,6 +871,46 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 }
 
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
+    // Optional headless mode for verification:
+    //   Patch.exe --check <install> | --apply <install> | --revert <install>
+    std::wstring cliCommand, cliDir;
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (argv) {
+        for (int i = 1; i < argc; ++i) {
+            const std::wstring arg = argv[i];
+            if (arg == L"--check" || arg == L"--apply" || arg == L"--revert") {
+                cliCommand = arg;
+                if (i + 1 < argc) cliDir = argv[i + 1];
+            }
+        }
+        LocalFree(argv);
+    }
+    if (!cliCommand.empty()) {
+        g_cli = true;
+        gInstall = cliDir;
+        const std::wstring cliLogPath = Join(ExeDir(), L"Patch-cli.log");
+        _wfopen_s(&g_cliLog, cliLogPath.c_str(), L"w, ccs=UTF-8");
+        Log(L"Repentogon Online-Patch v0.0.2 (CLI: %s)", cliCommand.c_str());
+        Log(L"Installation: %s", gInstall.c_str());
+        RefreshStatus(true);
+        Log(L"EXE-Status: %d (0=original, 1=gepatcht, 2=unbekannt)", g_exeState);
+        Log(L"DLL-Status: %d (0=Patch fehlt, 1=gepatcht, 2=unbekannt)", g_dllState);
+        int cliExit = 0;
+        if (!IsValidInstall(gInstall)) {
+            Report(L"Keine gültige REPENTOGON-Installation.", L"Fehler", MB_ICONERROR);
+            cliExit = 2;
+        } else {
+            bool ok = true;
+            if (cliCommand == L"--apply") ok = DoApply();
+            else if (cliCommand == L"--revert") ok = DoRevert();
+            Log(L"Ergebnis: %s", ok ? L"OK" : L"FEHLER");
+            cliExit = ok ? 0 : 1;
+        }
+        if (g_cliLog) { fclose(g_cliLog); g_cliLog = nullptr; }
+        return cliExit;
+    }
+
     SetProcessDPIAware();
     INITCOMMONCONTROLSEX icc{ sizeof(icc), ICC_STANDARD_CLASSES };
     InitCommonControlsEx(&icc);
@@ -625,7 +925,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     wc.lpszClassName = L"RgonOnlineUnlockWnd";
     RegisterClassExW(&wc);
 
-    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"Repentogon Online-Co-op-Patch v0.0.1 (experimentell)",
+    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"Repentogon Online-Patch v0.0.2 (experimentell)",
                                 WS_OVERLAPPEDWINDOW,
                                 CW_USEDEFAULT, CW_USEDEFAULT, 700, 560,
                                 nullptr, nullptr, inst, nullptr);

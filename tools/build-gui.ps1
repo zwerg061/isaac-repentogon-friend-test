@@ -28,7 +28,7 @@ $exe = Join-Path $Out 'RgonOnlineUnlock.exe'
 
 $cmd = @(
     "call `"$vcvars`" >nul",
-    "cl /nologo /W4 /O2 /MT /EHsc /utf-8 /DUNICODE /D_UNICODE `"$Src`" /Fo:`"$obj`" /Fe:`"$exe`" /link /SUBSYSTEM:WINDOWS user32.lib gdi32.lib shell32.lib ole32.lib comctl32.lib advapi32.lib"
+    "cl /nologo /W4 /O2 /MT /EHsc /utf-8 /DUNICODE /D_UNICODE `"$Src`" /Fo:`"$obj`" /Fe:`"$exe`" /link /SUBSYSTEM:WINDOWS /MANIFEST:EMBED /MANIFESTUAC:`"level='asInvoker' uiAccess='false'`" user32.lib gdi32.lib shell32.lib ole32.lib comctl32.lib advapi32.lib"
 ) -join ' && '
 
 Write-Host 'Kompiliere ...'

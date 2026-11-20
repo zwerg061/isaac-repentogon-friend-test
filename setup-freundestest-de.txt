@@ -1,21 +1,40 @@
 ISAAC REPENTOGON – FREUND-TEST (EXPERIMENTELL)
-Version 0.0.1
+Version 0.0.2
 ================================================
 
 Zweck
-----
+-----
 Der Setup-EXE installiert nur `Patch.exe`, `modsync.py` und diese Anleitung.
 Er enthält keine Spiel-/REPENTOGON-Dateien, Mods, Spielstände, Steam-
 Anmeldedaten oder Tokens. Jeder Spieler braucht eine eigene, legitime
 Steam-Installation.
 
+Was `Patch.exe` macht
+---------------------
+`Patch.exe` tauscht keine Dateien aus. Es patcht die bereits installierten
+Dateien direkt und kann alles wieder zurücksetzen:
+
+- `Repentogon\isaac-ng.exe`: Coop-/Mod-Bann-Patch der Engine.
+- `Repentogon\zhlREPENTOGON.dll` (REPENTOGON 1.1.3), drei Byte-Patches:
+  a) der Menü-Filter setzt nur noch "Daily Run" zurück, nicht mehr das
+     ONLINE-Menü,
+  b) die erzwungene Online-Auswahl (Quick Match/Daily Run) wird übersprungen,
+  c) der Mod-Bann-Status wird 0 statt 3.
+
+Vor jedem Schreiben prüft `Patch.exe` die exakte Dateiversion (SHA-256). Passt
+etwas nicht, wird nichts verändert. Vor dem ersten Patch legt das Tool im
+Ordner `backup` neben `Patch.exe` Sicherungen an. "Zurücksetzen" stellt diese
+Sicherungen wieder her. Den Setup-Ordner deshalb nicht löschen, solange der
+Patch aktiv ist.
+
 Ehrlicher Status
 ----------------
-- Noch wurde keine Verbindung zu einem zweiten Spieler bestätigt.
-- Der bisherige Menütest landete bei Quick Match statt Friend Match. Es wurde
-  keine Lobby erstellt. Das Friend-Match-Menü gilt daher noch nicht als getestet.
-- Ein REPENTOGON-Online-Unlock entfernt nur bestimmte lokale Mod-Sperren; er
-  beweist nicht, dass die Netzwerkverbindung oder Mods synchron funktionieren.
+- Im isolierten Sandbox-Test bleibt das ONLINE-Menü mit diesem Patch offen;
+  Quick Match, Public Match und Friend Match sind sichtbar und anwählbar.
+- Eine echte Verbindung zu einem zweiten Spieler wurde noch nicht bestätigt.
+  Friend Match, privates Lobby-Erstellen und Mod-Synchronität sind offen.
+- Ein Online-Unlock entfernt nur lokale Sperren; er beweist nicht, dass die
+  Netzwerkverbindung oder Mods synchron funktionieren.
 - Der dokumentierte REPENTOGON-Befehl `netstart <SteamID64>` ist ein möglicher,
   aber hier noch unbestätigter Verbindungsweg. Er kann den angegebenen Freund
   verbinden/einladen. Nur ausführen, wenn beide Spieler gleichzeitig bereit sind.
@@ -27,7 +46,8 @@ Voraussetzungen bei BEIDEN Spielern
 -----------------------------------
 1. The Binding of Isaac: Repentance+ mit identischem Spiel-Build:
    v1.9.7.12.J273.
-2. REPENTOGON 1.1.3 und derselbe REPENTOGON-Online-Unlock-Stand.
+2. REPENTOGON 1.1.3 (unverändert installiert) und derselbe Patch-Stand
+   (Version 0.0.2).
 3. Identische Mods, Mod-Versionen UND Ladereihenfolge. Nicht benötigte Mods
    zunächst deaktivieren; Mods mit Zufall, Gegnern, Items oder Stats können
    Desyncs verursachen.
@@ -38,7 +58,9 @@ Vor dem Start
 1. Jeder Spieler installiert/aktualisiert Spiel und REPENTOGON selbst über
    vertrauenswürdige Quellen. Keine EXE/DLL oder Steam-Dateien gegenseitig
    verschicken.
-2. Beide Spieler brauchen Python 3 nur für den Mod-Abgleich. Im Setup-Ordner ein
+2. Im Setup-Ordner `Patch.exe` starten, Installation prüfen lassen und
+   "Patch anwenden" wählen. Danach steht dort "Online-Menü-Fix aktiv".
+3. Beide Spieler brauchen Python 3 nur für den Mod-Abgleich. Im Setup-Ordner ein
    PowerShell-Fenster öffnen und jeweils ein eigenes Manifest erstellen:
 
    ```powershell
@@ -52,7 +74,7 @@ Vor dem Start
    Der Freund erstellt stattdessen `client-mods.json`. Der Host schickt nur
    `host-mods.json` an den Freund; es enthält Mod-Metadaten und Datei-Hashes,
    aber keine Mods, absoluten Installationspfade, Steam-IDs oder Spielstände.
-3. Der Freund vergleicht sein Manifest im selben Setup-Ordner:
+4. Der Freund vergleicht sein Manifest im selben Setup-Ordner:
 
    ```powershell
    py .\modsync.py compare --host .\host-mods.json --local .\client-mods.json
@@ -60,16 +82,17 @@ Vor dem Start
 
    Bei Abweichungen erst angleichen; der Prüfer lädt keine Mods herunter und
    aktiviert nichts. Workshop-Dateien nur selbst und aus vertrauten Quellen holen.
-4. Keine Saves oder Steam-Anmeldedaten austauschen. Jeder nutzt seinen eigenen
+5. Keine Saves oder Steam-Anmeldedaten austauschen. Jeder nutzt seinen eigenen
    Steam-Account und einen separaten/isolierten Test-Spielstand.
 
 Verbindungstest
 ---------------
 1. Beide starten Isaac über den REPENTOGON-Launcher und bestätigen, dass Spiel-
    und REPENTOGON-Versionen sowie Mod-Manifeste übereinstimmen.
-2. Zuerst nur testen, ob beide das Online-Menü zuverlässig erreichen. Quick
-   Match/Public Match nicht versehentlich bestätigen.
-3. Erst wenn beide bereit sind, darf der Host den experimentellen
+2. Zuerst nur testen, ob beide das Online-Menü zuverlässig erreichen und Friend
+   Match anwählbar ist. Quick Match/Public Match nicht versehentlich bestätigen.
+3. Erst wenn beide bereit sind, darf der Host Friend Match öffnen und die
+   private Lobby erstellen oder den experimentellen
    `netstart <SteamID64-des-Freundes>`-Weg versuchen. SteamID64 ist die
    17-stellige Account-ID, kein Passwort und kein Token. Dieser Schritt kann
    einen Verbindungs-/Einladungsversuch auslösen.
@@ -78,6 +101,12 @@ Verbindungstest
    kein Verbindungsnachweis.
 5. Bei Absturz, Versionsabweichung oder Desync abbrechen. Keine fremden Lobbys
    betreten und keine unbekannten Mods installieren.
+
+Zurücksetzen
+------------
+`Patch.exe` starten und "Zurücksetzen" wählen. Das Tool stellt die Dateien aus
+dem `backup`-Ordner wieder her. Alternativ Spiel/REPENTOGON über Steam
+reparieren bzw. REPENTOGON neu installieren. Vorher das Spiel schließen.
 
 Erwartung
 ---------
@@ -89,4 +118,5 @@ nötig, um das zu klären.
 Referenzstände aus dem bisherigen Sandbox-Test:
 - Spiel: v1.9.7.12.J273
 - REPENTOGON: 1.1.3
+- ONLINE-Menü mit Patch: offen und Friend Match anwählbar (Sandbox bestätigt)
 - Verbindungsstatus: nicht bestätigt

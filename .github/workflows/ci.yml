@@ -23,5 +23,5 @@ jobs:
       - name: Publish build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Isaac-Freund-Test-Setup-v0.0.1
+          name: Isaac-Freund-Test-Setup-v0.0.2
           path: artifacts/Isaac-Freund-Test-Setup.exe
