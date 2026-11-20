@@ -1,5 +1,5 @@
 // Self-contained installer for the experimental REPENTOGON friend-test tools.
-// It installs only Patch.exe and a text guide. It does not ship game files,
+// It installs only local tools and documentation. It does not ship game files,
 // REPENTOGON binaries, mods, saves, or Steam credentials.
 
 #define WIN32_LEAN_AND_MEAN
@@ -15,7 +15,10 @@
 #pragma comment(linker, "/manifestdependency:\"type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 
 enum { IDC_PATH = 1001, IDC_BROWSE, IDC_INSTALL, IDC_RUN_PATCHER, IDC_GUIDE, IDC_STATUS };
-enum { IDR_PATCHER = 101, IDR_GUIDE = 102, IDR_MODSYNC = 103 };
+enum {
+    IDR_PATCHER = 101, IDR_GUIDE = 102, IDR_MODSYNC = 103, IDR_SESSION = 104,
+    IDR_STEAMBRIDGE = 105, IDR_APPID = 106, IDR_VERSION = 107, IDR_RESYNC = 108
+};
 
 static HINSTANCE g_instance = nullptr;
 static HWND g_path = nullptr, g_status = nullptr;
@@ -78,7 +81,10 @@ static void UpdateInstalledButtons() {
     const std::wstring folder = buffer;
     const bool installed = Exists(Join(folder, L"Patch.exe"))
                         && Exists(Join(folder, L"setup-freundestest-de.txt"))
-                        && Exists(Join(folder, L"modsync.py"));
+                        && Exists(Join(folder, L"modsync.py"))
+                        && Exists(Join(folder, L"Run-TempModProfile.ps1"))
+                        && Exists(Join(folder, L"SteamModProfileBridge.exe"))
+                        && Exists(Join(folder, L"steam_appid.txt"));
     EnableWindow(g_run, installed);
     EnableWindow(g_guide, installed);
 }
@@ -115,7 +121,13 @@ static void Install(HWND owner) {
     const std::wstring patcherPath = Join(folder, L"Patch.exe");
     const std::wstring guidePath = Join(folder, L"setup-freundestest-de.txt");
     const std::wstring modsyncPath = Join(folder, L"modsync.py");
-    if (Exists(patcherPath) || Exists(guidePath) || Exists(modsyncPath)) {
+    const std::wstring sessionPath = Join(folder, L"Run-TempModProfile.ps1");
+    const std::wstring bridgePath = Join(folder, L"SteamModProfileBridge.exe");
+    const std::wstring appIdPath = Join(folder, L"steam_appid.txt");
+    const std::wstring versionPath = Join(folder, L"VERSION");
+    const std::wstring resyncPath = Join(folder, L"Resync-ProfileAndSaveData.ps1");
+    if (Exists(patcherPath) || Exists(guidePath) || Exists(modsyncPath) || Exists(sessionPath) ||
+        Exists(bridgePath) || Exists(appIdPath) || Exists(versionPath) || Exists(resyncPath)) {
         MessageBoxW(owner,
             L"Im ausgew\u00E4hlten Ordner gibt es bereits eine oder mehrere Zieldateien.\n"
             L"Es wird nichts \u00FCberschrieben. Bitte einen leeren Ordner w\u00E4hlen.",
@@ -134,9 +146,20 @@ static void Install(HWND owner) {
     const bool patcherOk = WriteResource(IDR_PATCHER, patcherPath);
     const bool guideOk = patcherOk && WriteResource(IDR_GUIDE, guidePath);
     const bool modsyncOk = guideOk && WriteResource(IDR_MODSYNC, modsyncPath);
-    if (!modsyncOk) {
+    const bool sessionOk = modsyncOk && WriteResource(IDR_SESSION, sessionPath);
+    const bool bridgeOk = sessionOk && WriteResource(IDR_STEAMBRIDGE, bridgePath);
+    const bool appIdOk = bridgeOk && WriteResource(IDR_APPID, appIdPath);
+    const bool versionOk = appIdOk && WriteResource(IDR_VERSION, versionPath);
+    const bool resyncOk = versionOk && WriteResource(IDR_RESYNC, resyncPath);
+    if (!resyncOk) {
         if (patcherOk) DeleteFileW(patcherPath.c_str());
         if (guideOk) DeleteFileW(guidePath.c_str());
+        if (modsyncOk) DeleteFileW(modsyncPath.c_str());
+        if (sessionOk) DeleteFileW(sessionPath.c_str());
+        if (bridgeOk) DeleteFileW(bridgePath.c_str());
+        if (appIdOk) DeleteFileW(appIdPath.c_str());
+        if (versionOk) DeleteFileW(versionPath.c_str());
+        if (resyncOk) DeleteFileW(resyncPath.c_str());
         SetStatus(L"Installation fehlgeschlagen; unvollst\u00E4ndige Datei wurde entfernt.");
         EnableWindow(g_install, TRUE);
         MessageBoxW(owner,
@@ -151,7 +174,7 @@ static void Install(HWND owner) {
     UpdateInstalledButtons();
     MessageBoxW(owner,
         L"Installation abgeschlossen.\n\n"
-        L"Patch.exe, modsync.py und die Anleitung wurden installiert.\n"
+        L"Patch.exe, Mod-Sync-Runner, Steam-P2P-Companion und Anleitung wurden installiert.\n"
         L"Patch.exe sichert die vorhandenen Spiel-Dateien und bietet Zur\u00FCcksetzen an.\n\n"
         L"Keine Spiel-EXE, REPENTOGON-Binaries, Workshop-Mods, Saves oder Steam-Zugangsdaten sind enthalten.",
         L"Fertig", MB_ICONINFORMATION);
@@ -194,10 +217,10 @@ static LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPA
             OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
             DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
 
-        HWND header = CreateWindowExW(0, L"STATIC", L"Isaac Repentogon Freund-Test – Setup v0.0.2",
+        HWND header = CreateWindowExW(0, L"STATIC", L"Isaac Repentogon Freund-Test – Setup v0.0.6",
             WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, window, (HMENU)1101, g_instance, nullptr);
         HWND warning = CreateWindowExW(0, L"STATIC",
-            L"Installiert nur Patch.exe und eine Anleitung.\n"
+            L"Installiert nur Patch.exe, lokale Mod-Werkzeuge und eine Anleitung.\n"
             L"Experimentell: Eine funktionierende Online-Verbindung ist nicht best\u00E4tigt.",
             WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, window, (HMENU)1102, g_instance, nullptr);
         g_path = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", DefaultFolder().c_str(),
@@ -205,8 +228,8 @@ static LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPA
         HWND browse = CreateWindowExW(0, L"BUTTON", L"Durchsuchen...",
             WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window, (HMENU)IDC_BROWSE, g_instance, nullptr);
         HWND contents = CreateWindowExW(0, L"STATIC",
-            L"Enthalten: Patch.exe (Pr\u00FCfen / Patch / Zur\u00FCcksetzen), gepr\u00FCfte REPENTOGON-1.1.3-Men\u00FC-DLL,\n"
-            L"modsync.py und Anleitung. Keine Isaac-EXE, Workshop-Mods, Saves oder Steam-Daten.",
+            L"Enthalten: Patch.exe, Temp-Mod-Runner, Steam-P2P-Companion und Anleitung.\n"
+            L"Keine Isaac-EXE, Mods, Saves oder Steam-Zugangsdaten.",
             WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, window, (HMENU)1103, g_instance, nullptr);
         g_install = CreateWindowExW(0, L"BUTTON", L"Installieren",
             WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON, 0, 0, 0, 0, window, (HMENU)IDC_INSTALL, g_instance, nullptr);
@@ -264,7 +287,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     RECT rect{ 0, 0, 680, 370 };
     AdjustWindowRect(&rect, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, FALSE);
     HWND window = CreateWindowExW(0, cls.lpszClassName,
-        L"Isaac Repentogon Freund-Test Setup v0.0.2 (experimentell)",
+        L"Isaac Repentogon Freund-Test Setup v0.0.6 (experimentell)",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
         CW_USEDEFAULT, CW_USEDEFAULT, rect.right - rect.left, rect.bottom - rect.top,
         nullptr, nullptr, instance, nullptr);

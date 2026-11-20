@@ -1,13 +1,21 @@
 # Isaac REPENTOGON Friend Test
 
-**Version:** 0.0.2 (experimental)<br>
+**Version:** 0.0.6 (experimental)<br>
 **Status:** menu fix verified in a sandbox; connection not yet verified with a
 second player.
 
+> **Closed friend test v0.0.6 — automatic transfer enabled.** A two-sided version
+> check gates `-HostMode` and `-WaitForHostProfile`: both players must use v0.0.6
+> (runner, companion file version and profile `tool_version`), otherwise the
+> runner aborts before contacting Steam, sending a profile, downloading mods or
+> changing the game. The complete two-player transfer and the in-lobby mod reload
+> have still **not** been verified with a real second player; use only with a
+> trusted friend and an isolated save.
+
 A small Windows setup package for testing the experimental REPENTOGON online
-co-op patch with a consenting friend. It installs a local patch manager and a
-read-only mod-manifest checker. It does **not** distribute the game, REPENTOGON,
-mods, Workshop files, saves, or Steam credentials.
+co-op patch with a consenting friend. It installs a local patch manager and
+tools to inspect and optionally apply a local mod profile. It does **not**
+distribute the game, REPENTOGON, mods, Workshop files, saves, or Steam credentials.
 
 ## Important status
 
@@ -16,7 +24,8 @@ mods, Workshop files, saves, or Steam credentials.
   selectable. A cursor check (one Arrow-Down, no confirmation) is used to verify
   that the selection is not locked.
 - No real connection to a second player has been established yet. A reachable
-  menu is not proof of working networking or mod sync.
+  menu or temporary mod-profile staging is not proof of working networking or
+  automatic multiplayer mod synchronization.
 - REPENTOGON's `netstart <SteamID64>` is a possible but unverified connection
   path. It may initiate a connection/invitation, so use it only when both
   players are ready and have agreed.
@@ -47,8 +56,18 @@ to `Patch.exe`.
 The single-file `Isaac-Freund-Test-Setup.exe` release asset embeds:
 
 - `Patch.exe` — GUI with **Prüfen**, **Patch anwenden**, and **Zurücksetzen**.
-- `modsync.py` — mod manifest comparison (the documented `create` and
-  `compare` steps only read local files and write the manifest JSON you name).
+- `modsync.py` — manifest/profile tools. The session command copies only
+  hash-verified host mods into a fresh `%TEMP%` staging folder, plus the same
+  temporary lobby-exit observer on both players; it can call SteamCMD anonymously
+  for Workshop IDs from the trusted host profile.
+- `Run-TempModProfile.ps1` — temporarily redirects Isaac's fixed `mods` path to
+  that staging folder and restores the original folder when Isaac exits. An
+  experimental log-based notice reports leaving the lobby *menu*, not verified
+  Steam-lobby closure. Isaac is not closed automatically.
+- `SteamModProfileBridge.exe` — version-checked host/client companion for
+  a future Steam P2P profile transfer.
+  `steam_appid.txt` contains only Isaac's public AppID; Steam's API DLL is loaded
+  from the player's own game installation, not included in the setup.
 - `setup-freundestest-de.txt` — German preparation and test instructions.
 
 The installer asks for a destination folder and refuses to overwrite existing
@@ -64,9 +83,13 @@ UAC prompt; the game folder must be writable by the current user.
 - Identical enabled mods, mod versions, and load order.
 - Explicit consent to the experimental patch and test.
 
-Use separate/isolated test saves. Do not exchange save files or Steam login
-details. The manifest contains mod metadata and hashes only; it does not install,
-enable, or download mods. Python 3 is needed only for the manifest comparison.
+Both players would need the same setup and must be Steam friends; the automatic
+transfer is currently disabled until lobby membership can be verified. Use
+separate/isolated test saves.
+Do not exchange save files or Steam login details. SteamCMD is optional if a mod
+is missing from the local Isaac folder and Workshop cache; it uses anonymous login
+only. Steam may keep downloaded Workshop originals in its cache after the active
+TEMP copy is removed.
 
 ## Build from source (Windows)
 
@@ -88,11 +111,11 @@ Run the unit tests:
 python -m unittest discover -s tests -v
 ```
 
-## Mod manifest commands
+## Local mod manifest (optional diagnostics)
 
-From the folder containing `modsync.py`, each player creates a manifest using
-their own installed mods and game log. The host privately shares only
-`host-mods.json`; the friend compares their local manifest:
+Each player can create a local manifest from their own game log. These files
+stay on that player's PC. The automatic Steam P2P transfer now requires a
+matching v0.0.6 version on both sides:
 
 ```powershell
 py .\modsync.py create --mods-dir "<Isaac>\mods" `
@@ -103,10 +126,81 @@ py .\modsync.py compare --host .\host-mods.json --local .\client-mods.json
 ```
 
 The comparison is informational; matching files do not guarantee desync-free
-multiplayer.
+multiplayer. Both role-specific runner modes can also generate a temporary local
+manifest automatically if `-LocalManifest` is omitted.
 
-## Version 0.0.2
+### Automatic Friend-lobby profile exchange (v0.0.6 friend test)
 
-In-place menu fix for the installed REPENTOGON 1.1.3 DLL, no DLL shipping. A real
-two-player connection, private lobby creation, and REPENTOGON mod synchronization
-remain unverified.
+The workflow needs no manual JSON exchange. Both commands are active after the
+two-sided v0.0.6 version check. The runner reads the lobby ID from the live game
+log, shows a progress bar while waiting, and the companion re-verifies lobby
+ownership/membership on every callback:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Run-TempModProfile.ps1 `
+  -HostMode -IsaacRoot "<Isaac-installation>"
+```
+
+The client command waits for the host profile after the private lobby is joined:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Run-TempModProfile.ps1 `
+  -WaitForHostProfile -IsaacRoot "<Isaac-installation>" `
+  -SteamCmd "<SteamCMD-folder>\steamcmd.exe"
+```
+
+The experimental routing checks lobby membership and host ownership on every
+callback and triggers a safe in-lobby mod reload; end-to-end verification with
+two players is still outstanding. Missing Workshop items are fetched with
+SteamCMD `+login anonymous`; no Steam token files are read or saved.
+
+In the manual profile mode the runner moves the original `mods` folder aside,
+puts a verified junction to the TEMP session in its place, then starts REPENTOGON.
+The temporary observer logs transitions out of the `ONLINELOBBY` menu and the
+runner may show a notice; this does not prove that the Steam lobby has ended.
+Detection has not been tested end-to-end on two players. The live game still
+has the host mods loaded until it closes; then the original Mods folder is
+restored and the staged copy removed. Lobby detection is experimental and has
+not yet been verified in a real two-player session. If the runner is interrupted
+while Isaac is open, close the game and run:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Run-TempModProfile.ps1 `
+  -IsaacRoot "<Isaac-installation>" -RestoreOnly
+```
+
+The swap is journalled atomically and protected by an exclusive lockfile: a
+failed step rolls back immediately, and a stale session after a hard game crash
+is restored automatically on the next runner start (once Isaac is closed).
+Fixture-only tests cover this in `tests/test_swap_journal.ps1`.
+
+Do not launch a second Isaac instance or start a Steam game update during the
+session. The runner changes no original mod contents or saves, but the game
+installation's `mods` directory path is temporarily a junction. It does not
+synchronize load order or MCM settings; selected MCM values remain a separate
+manual sandbox flow.
+
+## Anti-desync protection and Isaac Desync Assistant
+
+Before the game starts, the runner enforces the exact mod load order, matching
+game/REPENTOGON build SHA-256 hashes and version equality on both sides. Mod
+SaveData is staged into a fresh isolated `data/` tree and junctioned for the
+session; a critical mismatch blocks the start with a clear message.
+
+The temporary helper mod monitors start seed, stage/room index, item-pool
+checksums and loaded mod state, writing diagnostic markers to the game log. The
+companion analyses that log and opens the **Isaac Desync Assistant** on a desync,
+P2P timeout or unexpected lobby abort. The German dialog names the cause and the
+affected mod/file and offers a one-click **"Profil & SaveData neu
+synchronisieren"** action that rebuilds the temp profile from the same trusted
+host profile.
+
+## Version 0.0.6
+
+Enables automatic Steam P2P profile transfer and the in-lobby mod hot reload for
+a closed friend test, gated by a strict two-sided v0.0.6 version check. Adds an
+atomic journal/lockfile with immediate rollback and automatic crash recovery, a
+custom-shader fixture with a log-based shader/RoomConfig stability check, and
+build-time hash and `asInvoker` verification. A real two-player connection,
+SteamAPI companion behavior alongside Isaac, the live Friend-lobby trigger,
+settings transfer and mod load-order application remain unverified.

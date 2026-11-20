@@ -1,6 +1,16 @@
 ISAAC REPENTOGON – FREUND-TEST (EXPERIMENTELL)
-Version 0.0.2
+Version 0.0.6 (experimentell)
 ================================================
+
+WICHTIG: FREIGABE NUR FUER DEN GESCHLOSSENEN FREUNDESTEST.
+Automatische Steam-P2P-Uebertragung und der Mod-Hot-Reload in der Freund-Lobby
+sind in v0.0.6 scharf geschaltet. Sie werden NUR freigegeben, wenn BEIDE Seiten
+exakt Version 0.0.6 einsetzen: Der Runner prueft die FileVersion des
+Steam-P2P-Companions und die `tool_version` des Host-Profils, der Companion
+prueft zusaetzlich `--expected-version`. Bei Abweichung bricht der Runner vor
+jeglichem Versand, Download oder Aenderung ab.
+Ein echter Zwei-Spieler-Nachweis steht weiterhin aus: Der Test ist bewusst auf
+eine vertraute Person und einen isolierten Spielstand begrenzt.
 
 Zweck
 -----
@@ -47,7 +57,7 @@ Voraussetzungen bei BEIDEN Spielern
 1. The Binding of Isaac: Repentance+ mit identischem Spiel-Build:
    v1.9.7.12.J273.
 2. REPENTOGON 1.1.3 (unverändert installiert) und derselbe Patch-Stand
-   (Version 0.0.2).
+   (Version 0.0.6).
 3. Identische Mods, Mod-Versionen UND Ladereihenfolge. Nicht benötigte Mods
    zunächst deaktivieren; Mods mit Zufall, Gegnern, Items oder Stats können
    Desyncs verursachen.
@@ -60,47 +70,116 @@ Vor dem Start
    verschicken.
 2. Im Setup-Ordner `Patch.exe` starten, Installation prüfen lassen und
    "Patch anwenden" wählen. Danach steht dort "Online-Menü-Fix aktiv".
-3. Beide Spieler brauchen Python 3 nur für den Mod-Abgleich. Im Setup-Ordner ein
-   PowerShell-Fenster öffnen und jeweils ein eigenes Manifest erstellen:
+3. Ablauf (v0.0.6 aktiv): Beide Spieler brauchen Python 3 und Setup **v0.0.6**.
+   Es wird keine `host-profile.json` und kein Mod-Archiv manuell verschickt. Der
+   Host-Runner erstellt das Profil aus seinem letzten Spiel-Log und uebertraegt
+   es automatisch ueber Steam-P2P. Der Host muss Isaac zuvor einmal mit dem
+   gewuenschten Mod-Set gestartet und normal beendet haben, damit `log.txt` die
+   Mod-Liste enthaelt. Beide Spieler muessen denselben Lobby-Beitritt im Spiel
+   ausfuehren; der Runner liest die Lobby-ID aus dem Spiel-Log und zeigt einen
+   Fortschrittsbalken, solange darauf gewartet wird.
+4. Befehle (v0.0.6 aktiv):
 
    ```powershell
-   py .\modsync.py create `
-     --mods-dir "<Isaac-Installationsordner>\mods" `
-     --log "$env:USERPROFILE\Documents\My Games\Binding of Isaac Repentance+\log.txt" `
-     --repentogon-dir "<Isaac-Installationsordner>\Repentogon" `
-     --output host-mods.json
+   powershell -NoProfile -ExecutionPolicy Bypass -File .\Run-TempModProfile.ps1 `
+     -HostMode -IsaacRoot "<Isaac-Installationsordner>"
    ```
 
-   Der Freund erstellt stattdessen `client-mods.json`. Der Host schickt nur
-   `host-mods.json` an den Freund; es enthält Mod-Metadaten und Datei-Hashes,
-   aber keine Mods, absoluten Installationspfade, Steam-IDs oder Spielstände.
-4. Der Freund vergleicht sein Manifest im selben Setup-Ordner:
+   Der Freund startet den Warte-Modus ebenfalls bei geschlossenem Isaac:
 
    ```powershell
-   py .\modsync.py compare --host .\host-mods.json --local .\client-mods.json
+   powershell -NoProfile -ExecutionPolicy Bypass -File .\Run-TempModProfile.ps1 `
+     -WaitForHostProfile -IsaacRoot "<Isaac-Installationsordner>" `
+     -SteamCmd "<SteamCMD-Ordner>\steamcmd.exe"
    ```
 
-   Bei Abweichungen erst angleichen; der Prüfer lädt keine Mods herunter und
-   aktiviert nichts. Workshop-Dateien nur selbst und aus vertrauten Quellen holen.
+   Der Freund wartet auf Steam-P2P und empfaengt das Profil nach dem
+   Lobbybeitritt automatisch. Die Mods werden hashgeprueft; fehlende Workshop-
+   IDs laedt SteamCMD ausschliesslich mit `+login anonymous` herunter.
+   SteamCMD wird nicht mitgeliefert; Steam kann die Workshop-Originale im Cache
+   behalten. Steam-Zugangsdaten und Token-Dateien werden nicht gelesen oder
+   gespeichert. Der Versions-Check läuft automatisch; `-SandboxOptIn` wird nicht
+   mehr benoetigt (der Schalter bleibt aus Kompatibilitaetsgruenden wirkungslos
+   erhalten).
+
+   Beide Runner fuegen denselben kleinen Temp-Beobachter-Mod hinzu. Er hat keine
+   Gameplay-Funktion und dient nur dem Lobby-Hinweis. Bei erkannter Rueckkehr ins
+   Lobby-Menue wird der Mod-Hot-Reload ausgeloest (nur nach bestandenem
+   Versions-Check). Das Host-Mod-Set wird temporaer staged; die Originale werden
+   beim Schliessen von Isaac restauriert. P2P-Uebertragung, Lobby-Erkennung und
+   Hot-Reload sind noch nicht mit einem echten Zwei-Spieler-Test bestaetigt.
+
+    Der Runner legt die Temp-Mods in `%TEMP%` ab und schaltet den festen Isaac-
+    `mods`-Pfad waehrend der Session ueber eine gepruefte Junction um. Der
+    experimentelle Hinweis meldet nur das Verlassen des Lobby-Menues, nicht
+    sicher das Ende der Steam-Lobby. Isaac bleibt offen und das Host-Mod-Set
+    bleibt bis zum Schliessen des Spiels geladen. Dann wird der originale
+    Mods-Ordner automatisch wiederhergestellt. Wenn der Runner waehrend eines
+    laufenden Spiels beendet wird: Isaac schliessen, dann wiederherstellen mit:
+
+    ```powershell
+    powershell -NoProfile -ExecutionPolicy Bypass -File .\Run-TempModProfile.ps1 `
+      -IsaacRoot "<Isaac-Installationsordner>" -RestoreOnly
+    ```
+
+    Der Junction-Swap ist atomar journaled und durch eine Lockdatei gegen einen
+    zweiten Runner abgesichert. Bricht ein Schritt mittendrin ab, rollt der
+    Runner sofort auf das vorherige Mod-Set zurueck. Nach einem harten
+    Spielabsturz stellt der naechste Runner-Start den Original-Mods-Ordner
+    automatisch wieder her, sobald Isaac nicht mehr laeuft. Die Lockdatei eines
+    abgestuerzten Runners wird dabei automatisch als verwaist erkannt.
+
+    Das Mod-Set im bereits laufenden Spiel wechselt beim Hinweis nicht sofort.
+    Keine zweite Isaac-Instanz oder Steam-Spielaktualisierung starten,
+    solange die Temp-Session aktiv ist. Mod-Ladereihenfolge und MCM-Settings
+    werden nicht automatisch synchronisiert; ausgewaehlte MCM-Werte haben einen
+    separaten, manuellen Sandbox-Bridge-Workflow.
+
 5. Keine Saves oder Steam-Anmeldedaten austauschen. Jeder nutzt seinen eigenen
    Steam-Account und einen separaten/isolierten Test-Spielstand.
 
+Anti-Desync-Schutz & Isaac Desync Assistant
+-------------------------------------------
+Vor jedem Spielstart prueft der Runner automatisch:
+
+- exakte Mod-Ladereihenfolge (inklusive Reihenfolge-Hash) beider Spieler,
+- identische SHA-256-Build-Hashes von `isaac-ng.exe` und
+  `zhlREPENTOGON.dll`,
+- identische Spiel-, REPENTOGON- und Tool-Version (0.0.6),
+- und erstellt ein frisches, identisches Mod-SaveData-Verzeichnis unter `data/`.
+
+Bei einer kritischen Abweichung blockiert der Runner den Start mit einer klaren
+Meldung; es werden keine Mods gestaget und keine Dateien veraendert. Das lokale
+Mod-SaveData wird waehrend der Session isoliert und danach automatisch
+zurueckgesetzt (ebenfalls journaled und crashsicher).
+
+Der temporaele Helper-Mod ueberwacht Start-Seed, Stage/Room-Index,
+Item-Pool-Checksummen und die geladenen Mods und schreibt Diagnosemarker ins Log.
+Der Steam-P2P-Companion wertet dieses Log aus. Bei Desync, P2P-Timeout oder
+unerwartetem Lobby-Abbruch oeffnet sich der **Isaac Desync Assistant**: Er nennt
+den Grund, die betroffene Datei bzw. den betroffenen Mod und bietet den Button
+**"Profil & SaveData neu synchronisieren"**. Ein Klick stellt die vorherige
+Session wieder her und baut Profil und isoliertes SaveData aus demselben
+vertrauten Host-Profil neu auf. Das Spiel wird nicht automatisch gestartet.
+
 Verbindungstest
 ---------------
-1. Beide starten Isaac über den REPENTOGON-Launcher und bestätigen, dass Spiel-
-   und REPENTOGON-Versionen sowie Mod-Manifeste übereinstimmen.
-2. Zuerst nur testen, ob beide das Online-Menü zuverlässig erreichen und Friend
-   Match anwählbar ist. Quick Match/Public Match nicht versehentlich bestätigen.
-3. Erst wenn beide bereit sind, darf der Host Friend Match öffnen und die
-   private Lobby erstellen oder den experimentellen
-   `netstart <SteamID64-des-Freundes>`-Weg versuchen. SteamID64 ist die
-   17-stellige Account-ID, kein Passwort und kein Token. Dieser Schritt kann
-   einen Verbindungs-/Einladungsversuch auslösen.
-4. Erfolg erst notieren, wenn der Freund tatsächlich verbunden ist und beide
-   denselben Run sehen. Ein geöffnetes Menü oder eine Lobby-Form allein ist
-   kein Verbindungsnachweis.
-5. Bei Absturz, Versionsabweichung oder Desync abbrechen. Keine fremden Lobbys
-   betreten und keine unbekannten Mods installieren.
+1. Der Companion prueft die tatsaechliche Friend-Lobby und ihre Teilnehmer;
+   die Lobby-ID stammt aus dem laufenden Spiel-Log. Kein Profil wird manuell
+   geteilt. Der Versions-Check muss auf beiden Seiten 0.0.6 ergeben.
+2. Der Host und der Freund muessen denselben experimentellen Build benutzen.
+   Der reale Beitritt und ein Mod-Wechsel nach dem Beitritt sind noch offen;
+   der Hot-Reload ist dafuer freigeschaltet, aber nicht zweispieler-verifiziert.
+3. Quick Match/Public Match nicht versehentlich bestaetigen.
+4. Der experimentelle `netstart <SteamID64-des-Freundes>`-Weg ist alternativ,
+   aber hier nicht bestaetigt. SteamID64 ist die 17-stellige Account-ID, kein
+   Passwort und kein Token.
+5. Erfolg erst notieren, wenn der Freund tatsächlich verbunden ist und beide
+    denselben Run sehen. Ein geöffnetes Menü oder eine Lobby-Form allein ist
+    kein Verbindungsnachweis.
+6. Bei Absturz, Versionsabweichung oder Desync abbrechen. Keine fremden Lobbys
+   betreten und keine unbekannten Mods installieren. Nach dem Lobby-Test Isaac
+   beim Client schließen, damit der Temp-Runner die Original-Mods zurücksetzt.
 
 Zurücksetzen
 ------------

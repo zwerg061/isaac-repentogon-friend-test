@@ -17,11 +17,14 @@ jobs:
           python-version: '3.x'
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
+      - name: Test lobby log watcher with fixtures
+        shell: pwsh
+        run: ./tests/test_lobby_log_watcher.ps1
       - name: Build setup executable
         shell: pwsh
         run: ./tools/build-friend-test-setup.ps1 -OutDir artifacts
       - name: Publish build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Isaac-Freund-Test-Setup-v0.0.2
+          name: Isaac-Freund-Test-Setup-v0.0.6
           path: artifacts/Isaac-Freund-Test-Setup.exe

@@ -1,5 +1,5 @@
 ﻿// ---------------------------------------------------------------------------
-//  Repentogon Online Unlock v0.0.2
+//  Repentogon Online Unlock v0.0.6
 //
 //  Kleines eigenstaendiges Windows-Tool (kein .NET, keine Installation):
 //  wendet den experimentellen Online-Patch fuer REPENTOGON an.
@@ -732,7 +732,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                                  OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                                  FIXED_PITCH | FF_MODERN, L"Consolas");
 
-        g_hHead = CreateWindowExW(0, L"STATIC", L"Repentogon Online-Patch v0.0.2 (experimentell)",
+        g_hHead = CreateWindowExW(0, L"STATIC", L"Repentogon Online-Patch v0.0.6 (experimentell)",
                                   WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, hwnd, (HMENU)ID_HEAD, nullptr, nullptr);
 
         g_hPath = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
@@ -779,7 +779,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             SetWindowTextW(g_hPath, gInstall.c_str());
         }
 
-        Log(L"Repentogon Online-Patch v0.0.2 (experimentell)");
+        Log(L"Repentogon Online-Patch v0.0.6 (experimentell)");
         Log(L"Patcht vorhandene Dateien in place: Coop-Patch (isaac-ng.exe) und");
         Log(L"drei Byte-Patches in zhlREPENTOGON.dll (1.1.3). Alles ist umkehrbar.");
         Log(L"Hinweis: Ein stabiler Lobby-Start mit Repentogon ist nicht bestaetigt.");
@@ -891,7 +891,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
         gInstall = cliDir;
         const std::wstring cliLogPath = Join(ExeDir(), L"Patch-cli.log");
         _wfopen_s(&g_cliLog, cliLogPath.c_str(), L"w, ccs=UTF-8");
-        Log(L"Repentogon Online-Patch v0.0.2 (CLI: %s)", cliCommand.c_str());
+    Log(L"Repentogon Online-Patch v0.0.6 (CLI: %s)", cliCommand.c_str());
         Log(L"Installation: %s", gInstall.c_str());
         RefreshStatus(true);
         Log(L"EXE-Status: %d (0=original, 1=gepatcht, 2=unbekannt)", g_exeState);
@@ -925,7 +925,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     wc.lpszClassName = L"RgonOnlineUnlockWnd";
     RegisterClassExW(&wc);
 
-    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"Repentogon Online-Patch v0.0.2 (experimentell)",
+    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"Repentogon Online-Patch v0.0.6 (experimentell)",
                                 WS_OVERLAPPEDWINDOW,
                                 CW_USEDEFAULT, CW_USEDEFAULT, 700, 560,
                                 nullptr, nullptr, inst, nullptr);

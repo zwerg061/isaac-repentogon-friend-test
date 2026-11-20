@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Create and compare read-only Isaac mod manifests and mod-only profiles.
+"""Create, compare, and safely apply local Isaac mod profiles.
 
-This first Mod Sync component does not download, install, enable, or execute mods.
-It records the mods actually loaded according to the game's log, their order,
-metadata version, and a SHA-256 digest of their installed files.
+This tool never downloads or copies mod content. Profile application only toggles
+REPENTOGON's per-mod disable.it markers after exact local hash/version checks.
+It records mods loaded according to the game's log, their order, and file hashes.
 
 Examples:
   python tools/modsync.py create --mods-dir "...\\mods" --log "...\\log.txt" \
@@ -11,27 +11,189 @@ Examples:
   python tools/modsync.py compare --host host-mods.json --local client-mods.json
   python tools/modsync.py profile create --manifest host-mods.json \
       --name "Co-op set" --output coop-profile.json
+  python tools/modsync.py profile apply --profile coop-profile.json \
+      --local-manifest client-mods.json --mods-dir "...\\mods" \
+      --rollback-output client-mod-state-before.json --apply
+  python tools/modsync.py profile stage --profile coop-profile.json \
+      --local-manifest client-mods.json --mods-dir "...\\mods" \
+      --output "%TEMP%\\IsaacModSyncSessions\\<session-id>"
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import html
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 
 FORMAT = "isaac-mod-sync-manifest"
 SCHEMA_VERSION = 1
 PROFILE_FORMAT = "isaac-mod-profile"
 PROFILE_SCHEMA_VERSION = 1
+TOOL_VERSION = "0.0.6"
+SAVEDATA_SESSION_FORMAT = "isaac-modsync-savedata-session"
+DESYNC_MONITOR_VERSION = "0.0.6"
+PROFILE_ROLLBACK_FORMAT = "isaac-mod-profile-rollback"
+PROFILE_ROLLBACK_SCHEMA_VERSION = 1
+SESSION_FORMAT = "isaac-mod-profile-session"
+SESSION_SCHEMA_VERSION = 1
+ISAAC_APP_ID = "250900"
+LOBBY_OBSERVER_FOLDER = "zz_modsync_lobby_exit_observer"
+LOBBY_OBSERVER_NAME = "ModSync Lobby Exit Observer"
+LOBBY_OBSERVER_METADATA = """<?xml version="1.0" encoding="UTF-8"?>
+<metadata><name>ModSync Lobby Exit Observer</name><version>0.0.6</version></metadata>
+"""
+LOBBY_OBSERVER_LUA = r'''-- Temporary session observer. It logs lobby-menu transitions only;
+-- it does not change gameplay, send network data, or close the game.
+local observer = RegisterMod("ModSync Lobby Exit Observer", 1)
+local seenOnlineLobby = false
+local progress = {
+    phase = "idle",
+    percent = 0,
+    message = "Isaac ModSync",
+}
+Isaac.DebugString("[modsync-lobby] observer ready")
+
+local function renderProgress()
+    if type(Isaac) ~= "table" or type(Isaac.RenderScaledText) ~= "function" then
+        return
+    end
+    local percent = math.floor(math.max(0, math.min(100, tonumber(progress.percent) or 0)))
+    local phaseText = tostring(progress.phase or "idle")
+    local text = string.format("[ModSync] %s %.0f%%", phaseText, percent)
+    local okRender, errRender = pcall(function()
+        Isaac.RenderScaledText(text, 0.5, 0.5, 0.05, { 1, 1, 1, 1 })
+    end)
+    if not okRender then
+        Isaac.DebugString("[modsync-lobby] progress render failed: " .. tostring(errRender))
+    end
+end
+
+local function onUpdate()
+    if type(MenuManager) ~= "table" or type(MainMenuType) ~= "table" then
+        return
+    end
+    local activeOk, active = pcall(MenuManager.IsActive)
+    if not activeOk or not active then
+        return
+    end
+    local menuOk, menu = pcall(MenuManager.GetActiveMenu)
+    if not menuOk then
+        return
+    end
+    if menu == MainMenuType.ONLINELOBBY then
+        if not seenOnlineLobby then
+            Isaac.DebugString("[modsync-lobby] lobby-menu-enter=" .. tostring(menu))
+        end
+        seenOnlineLobby = true
+        renderProgress()
+        return
+    end
+    -- Any active main-menu section other than the lobby after the lobby was seen
+    -- means the user backed out or returned from a run to the menu.
+    if seenOnlineLobby then
+        seenOnlineLobby = false
+        Isaac.DebugString("[modsync-lobby] lobby-menu-exit=" .. tostring(menu))
+    end
+end
+
+observer:AddCallback(ModCallbacks.MC_MAIN_MENU_RENDER, onUpdate)
+
+-- === Isaac Desync Monitor (temporary helper, v0.0.6) ===
+-- Writes diagnostic markers only. It never changes gameplay or contacts Steam.
+local EXPECTED_ORDER = { @@EXPECTED_ORDER@@ }
+local EXPECTED_HASHES = {
+@@EXPECTED_HASHES@@
+}
+local monitor = RegisterMod("ModSync Desync Monitor", 1)
+local lastSignature = nil
+local function fnv1a(text)
+    local hash = 2166136261
+    for i = 1, #text do
+        hash = (hash * 16777619) % 4294967296
+        hash = math.floor(hash) % 4294967296
+        hash = (hash + string.byte(text, i)) % 4294967296
+    end
+    return string.format("%08x", hash)
+end
+local function poolChecksum()
+    local ok, result = pcall(function()
+        local config = Isaac.GetItemConfig()
+        local parts = {}
+        for id = 1, 732 do
+            local entry = config:GetCollectible(id)
+            if entry then parts[#parts + 1] = tostring(entry.Name or id) end
+        end
+        return fnv1a(table.concat(parts, "|"))
+    end)
+    return ok and result or "unavailable"
+end
+local function loadedFilesChecksum()
+    local ok, files = pcall(function()
+        if type(Debug) ~= "table" or type(Debug.ListLoadedFiles) ~= "function" then return {} end
+        return Debug.ListLoadedFiles() or {}
+    end)
+    if not ok then return "unavailable" end
+    local names = {}
+    for _, path in ipairs(files) do names[#names + 1] = tostring(path) end
+    table.sort(names)
+    return fnv1a(table.concat(names, "|")), names
+end
+local function checkLoadOrder()
+    local checksum, names = loadedFilesChecksum()
+    if checksum == "unavailable" then return end
+    local found = {}
+    for _, path in ipairs(names) do
+        for _, expected in ipairs(EXPECTED_ORDER) do
+            if tostring(path):find(tostring(expected), 1, true) then found[expected] = true end
+        end
+    end
+    local missing = {}
+    for _, expected in ipairs(EXPECTED_ORDER) do
+        if not found[expected] then missing[#missing + 1] = tostring(expected) end
+    end
+    if #missing > 0 then
+        Isaac.DebugString("[modsync-desync] reason=mod-load-order severity=critical affected="
+            .. tostring(missing[1]) .. " checksum=" .. tostring(checksum))
+    end
+end
+local function sampleState()
+    local ok, seed, stage, room = pcall(function()
+        local game = Game()
+        return tostring(game:GetSeeds():GetStartSeed()), tostring(game:GetLevel():GetStage()),
+            tostring(game:GetLevel():GetCurrentRoomIndex())
+    end)
+    if not ok then return nil end
+    return seed .. "/" .. stage .. "/" .. room
+end
+local function onDesyncCheck()
+    if type(Game) ~= "function" or not Game():IsLoaded() then return end
+    local signature = sampleState()
+    if not signature then return end
+    if lastSignature and signature ~= lastSignature then
+        Isaac.DebugString("[modsync-desync] reason=room-transition signature=" .. signature
+            .. " pool=" .. poolChecksum())
+    end
+    lastSignature = signature
+end
+monitor:AddCallback(ModCallbacks.MC_POST_MODS_LOADED, checkLoadOrder)
+monitor:AddCallback(ModCallbacks.MC_POST_UPDATE, onDesyncCheck)
+Isaac.DebugString("[modsync-desync] monitor ready version=" .. tostring(@@DESYNC_VERSION@@)
+    .. " expected_mods=" .. tostring(#EXPECTED_ORDER))
+'''
 MCM_EXPORT_FORMAT = "isaac-mcm-settings-export"
 SETTINGS_BUNDLE_FORMAT = "isaac-mod-settings-bundle"
 MCM_IMPORT_FORMAT = "isaac-mcm-settings-import"
@@ -47,14 +209,73 @@ RGON_VERSION_RE = re.compile(
 RELEASE_VERSION_RE = re.compile(r"^\d+(?:\.\d+){1,3}[a-z]?$", re.IGNORECASE)
 IGNORED_DIRS = {".git", ".svn", "__pycache__", "cache", "logs"}
 IGNORED_SUFFIXES = {".log", ".tmp", ".pyc", ".bak"}
+METADATA_FILENAME = "metadata.xml"
+CONTENT_SUFFIXES = {".lua", ".xml", ".anm2", ".png", ".stb"}
 
 
 class ManifestError(Exception):
     pass
 
 
-def parse_loaded_mods(log_path: Path) -> tuple[list[str], str | None]:
-    """Return the latest loaded-mod list in log order and the latest game version."""
+class LobbyLogTracker:
+    """Interpret complete lines from one *fresh* Isaac log as untrusted hints.
+
+    The caller must start at the beginning of the current game session, reset
+    on log replacement/truncation, and verify any candidate through Steam. A
+    menu transition does not establish lobby membership or prove a lobby ended.
+    This parser does not perform I/O or contact Steam.
+    """
+
+    JOINED = re.compile(r"^\[INFO\] - Successfully joined lobby ([0-9]{10,20})\s*$")
+    ENTERED = re.compile(r"^\[INFO\] - Lua Debug: \[modsync-lobby\] lobby-menu-enter=17\s*$")
+    EXITED = re.compile(r"^\[INFO\] - Lua Debug: \[modsync-lobby\] lobby-menu-exit=([0-9]+)\s*$")
+    MAX_PARTIAL = 65536
+
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self._pending = b""
+        self.candidate_lobby: int | None = None
+        self.menu_active = False
+
+    def feed(self, chunk: bytes) -> list[tuple[str, int | None]]:
+        """Consume bytes, emitting events only after a complete newline."""
+        if not isinstance(chunk, bytes):
+            raise TypeError("Lobby log input must be bytes")
+        data = self._pending + chunk
+        lines = data.split(b"\n")
+        self._pending = lines.pop()
+        if len(self._pending) > self.MAX_PARTIAL or any(len(line) > self.MAX_PARTIAL for line in lines):
+            self.reset()
+            raise ManifestError("Ueberlange Lobby-Logzeile; Logzustand verworfen.")
+        events: list[tuple[str, int | None]] = []
+        for raw in lines:
+            line = raw.decode("utf-8", errors="replace").rstrip("\r")
+            joined = self.JOINED.fullmatch(line)
+            if joined:
+                candidate = int(joined.group(1))
+                if 0 < candidate <= (1 << 64) - 1:
+                    self.candidate_lobby = candidate
+                    self.menu_active = False
+                    events.append(("lobby_candidate", candidate))
+            elif self.ENTERED.fullmatch(line):
+                self.menu_active = True
+                events.append(("lobby_menu_enter", self.candidate_lobby))
+            elif self.EXITED.fullmatch(line) and self.menu_active:
+                self.menu_active = False
+                events.append(("lobby_menu_exit", self.candidate_lobby))
+                self.candidate_lobby = None
+        return events
+
+
+def parse_loaded_mods(log_path: Path, allow_empty: bool = False) -> tuple[list[str], str | None]:
+    """Return the latest enabled-mod list in its logged order and game version.
+
+    LOADED MOD describes discovered folders, including disabled ones. When the
+    game prints its explicit enabled block, that block is authoritative. Older
+    or synthetic logs without such a block retain the legacy discovery fallback.
+    """
     folders: list[str] = []
     seen: set[str] = set()
     game_version = None
@@ -72,7 +293,11 @@ def parse_loaded_mods(log_path: Path) -> tuple[list[str], str | None]:
     # lists; use only the last explicit list if the marker is present.
     starts = [i for i, line in enumerate(lines) if "begin list mods" in line.casefold()]
     current_list = lines[starts[-1]:] if starts else lines
-    for line in current_list:
+    enabled_starts = [i for i, line in enumerate(current_list) if "-- enabled mods start --" in line.casefold()]
+    if starts and not enabled_starts:
+        raise ManifestError("Aktivierte Mod-Liste im letzten Spiel-Log fehlt oder ist noch nicht vollstaendig.")
+    discovery_lines = current_list[:enabled_starts[-1]] if enabled_starts else current_list
+    for line in discovery_lines:
         if "LOADED MOD" not in line.upper():
             continue
         match = LOADED_MOD_RE.search(line)
@@ -80,14 +305,43 @@ def parse_loaded_mods(log_path: Path) -> tuple[list[str], str | None]:
             continue
         folder = match.group("folder").strip()
         key = folder.casefold()
+        # This temporary monitor is injected identically by both session
+        # runners, but it is not part of the host's gameplay mod profile.
+        if key == LOBBY_OBSERVER_FOLDER.casefold():
+            continue
         if key not in seen:
             seen.add(key)
             folders.append(folder)
 
-    if not folders:
+    if enabled_starts:
+        start = enabled_starts[-1]
+        ends = [i for i in range(start + 1, len(current_list))
+                if "-- enabled mods end --" in current_list[i].casefold()]
+        if not ends:
+            raise ManifestError("Aktivierte Mod-Liste im Spiel-Log ist unvollstaendig; bitte erneut nach Spielstart erfassen.")
+        discovered = {folder.casefold(): folder for folder in folders}
+        enabled: list[str] = []
+        enabled_seen: set[str] = set()
+        for line in current_list[start + 1:ends[0]]:
+            folder = line.strip()
+            if not folder:
+                continue
+            key = folder.casefold()
+            if key == LOBBY_OBSERVER_FOLDER.casefold():
+                continue
+            if key in enabled_seen:
+                raise ManifestError(f"Doppelter Eintrag in aktivierter Mod-Liste: {folder}")
+            if key not in discovered:
+                raise ManifestError(f"Aktivierter Mod hat keinen passenden LOADED-MOD-Pfad: {folder}")
+            enabled_seen.add(key)
+            enabled.append(discovered[key])
+        folders = enabled
+
+    if not folders and not allow_empty:
         raise ManifestError(
-            "Im Log wurden keine 'LOADED MOD .../mods/<ordner>/content/'-Zeilen gefunden. "
-            "Starte das Spiel mit den gewünschten Mods und verwende dessen aktuelles log.txt."
+            "Im Log wurden keine aktivierten Mods mit passenden Mod-Pfaden gefunden. "
+            "Starte das Spiel mit den gewuenschten Mods und verwende dessen aktuelles log.txt "
+            "(oder nutze --allow-empty fuer eine lokale Versionspruefung)."
         )
     return folders, game_version
 
@@ -151,7 +405,14 @@ def read_metadata(mod_dir: Path) -> dict[str, str | None]:
 
 
 def digest_mod(mod_dir: Path) -> tuple[str, int, int]:
-    """Hash regular mod files deterministically; ignore caches/logs/VCS metadata."""
+    """Hash regular mod content files deterministically; ignore caches/logs/VCS metadata.
+
+    Isaac normalizes ``metadata.xml`` while loading a mod (reformatting and
+    extending the document), so the raw metadata file must not participate in
+    the content digest. Otherwise the engine's automatic normalization surfaces
+    as a false hash mismatch. All actual mod content files (``.lua``,
+    ``Content-*.xml``, ``.anm2``, ``.png``, ``.stb``) are hashed strictly.
+    """
     digest = hashlib.sha256()
     file_count = 0
     total_bytes = 0
@@ -164,7 +425,12 @@ def digest_mod(mod_dir: Path) -> tuple[str, int, int]:
         ]
         for filename in files:
             path = root_path / filename
-            if path.is_symlink() or path.suffix.casefold() in IGNORED_SUFFIXES:
+            if (
+                path.is_symlink()
+                or path.name.casefold() == METADATA_FILENAME.casefold()
+                or (path.parent == mod_dir and path.name.casefold() == "disable.it")
+                or path.suffix.casefold() not in CONTENT_SUFFIXES
+            ):
                 continue
             paths.append(path)
 
@@ -186,22 +452,162 @@ def digest_mod(mod_dir: Path) -> tuple[str, int, int]:
     return digest.hexdigest(), file_count, total_bytes
 
 
+def sha256_file(path: Path) -> str | None:
+    """SHA-256 of a build artifact, or None when the file is absent."""
+    if not path.is_file():
+        return None
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError as exc:
+        raise ManifestError(f"Kann Build-Datei nicht hashen: {path}: {exc}") from exc
+    return digest.hexdigest()
+
+
+def load_order_keys(manifest_or_profile: dict[str, Any]) -> list[str]:
+    """Canonical mod identity list in the exact order recorded by the game log."""
+    stored_order = manifest_or_profile.get("load_order")
+    if isinstance(stored_order, list) and stored_order:
+        return [str(value) for value in stored_order]
+    mods = manifest_or_profile.get("mods") or manifest_or_profile.get("mod_set") or []
+    return [mod_key(mod) for mod in mods]
+
+
+def load_order_digest(keys: list[str]) -> str:
+    payload = json.dumps(keys, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def capture_build_hashes(repentogon_dir: Path) -> dict[str, str | None]:
+    """Hash the two binaries that actually determine deterministic gameplay."""
+    rgon = repentogon_dir.resolve()
+    return {
+        "game_build_sha256": sha256_file(rgon.parent / "isaac-ng.exe"),
+        "repentogon_build_sha256": sha256_file(rgon / "zhlREPENTOGON.dll"),
+    }
+
+
+def anti_desync_checks(profile: dict[str, Any], local: dict[str, Any]) -> dict[str, Any]:
+    """Fail closed on every driver of an Isaac online-coop desync.
+
+    Checks: exact load order + order digest, game/REPENTOGON build hashes,
+    version equality and profile tool version. Returns a machine-readable
+    summary that the runner prints before it starts the game.
+    """
+    problems: list[str] = []
+    warnings: list[str] = []
+    checks: list[dict[str, str]] = []
+
+    host_order = load_order_keys(profile)
+    local_order = load_order_keys(local)
+    host_order_digest = profile.get("load_order_sha256") or load_order_digest(host_order)
+    local_order_digest_value = local.get("load_order_sha256") or load_order_digest(local_order)
+    if host_order != local_order:
+        problems.append(
+            "Mod-Ladereihenfolge weicht ab (Host: %s / Client: %s)"
+            % (", ".join(host_order) or "-", ", ".join(local_order) or "-")
+        )
+    if host_order_digest != local_order_digest_value:
+        problems.append("Ladereihenfolge-Hash weicht ab")
+    checks.append({"name": "load_order", "status": "ok" if host_order == local_order else "mismatch"})
+
+    for label, key in (
+        ("Game-Build-Hash", "game_build_sha256"),
+        ("REPENTOGON-Build-Hash", "repentogon_build_sha256"),
+    ):
+        host_hash = profile.get(key)
+        local_hash = local.get(key)
+        if host_hash and local_hash and host_hash == local_hash:
+            status = "ok"
+        elif not host_hash and not local_hash:
+            # Fixture/old manifests without build artifacts: warn, do not block.
+            status = "unavailable"
+            warnings.append(f"{label} auf beiden Seiten nicht verfuegbar (keine Build-Datei im Manifest).")
+        else:
+            status = "mismatch"
+            problems.append(f"{label} fehlt oder weicht ab (Host={host_hash}, Client={local_hash})")
+        checks.append({"name": key, "status": status})
+
+    for label, key in (("Spielversion", "game_version"), ("REPENTOGON-Version", "repentogon_version")):
+        if profile.get(key) != local.get(key):
+            problems.append(f"{label} weicht ab (Host={profile.get(key)!r}, Client={local.get(key)!r})")
+    if profile.get("tool_version") != TOOL_VERSION:
+        problems.append(f"Tool-Version {profile.get('tool_version')!r} != {TOOL_VERSION}")
+
+    result = {
+        "status": "ok" if not problems else "blocked",
+        "tool_version": TOOL_VERSION,
+        "load_order": host_order,
+        "load_order_sha256": host_order_digest,
+        "checks": checks,
+        "problems": problems,
+        "warnings": warnings,
+    }
+    if problems:
+        raise ManifestError(
+            "Anti-Desync-Pruefung blockiert den Start:\n  - " + "\n  - ".join(problems)
+        )
+    return result
+
+
+def build_observer_lua(expected_order: list[str], expected_hashes: dict[str, str]) -> str:
+    """Generate the temporary helper mod with embedded anti-desync expectations."""
+    order_lua = ", ".join(json.dumps(value, ensure_ascii=False) for value in expected_order)
+    hashes_lua = "\n".join(
+        "  [%s] = %s," % (json.dumps(key, ensure_ascii=False), json.dumps(value))
+        for key, value in sorted(expected_hashes.items())
+    )
+    return (
+        LOBBY_OBSERVER_LUA.replace("@@EXPECTED_ORDER@@", order_lua)
+        .replace("@@EXPECTED_HASHES@@", hashes_lua)
+        .replace("@@DESYNC_VERSION@@", json.dumps(DESYNC_MONITOR_VERSION))
+    )
+
+
+def stage_savedata(session_root: Path, mod_folders: list[str]) -> dict[str, Any]:
+    """Create an isolated, deterministic mod-SaveData tree for the temp session.
+
+    Both players get the same fresh data directory, so no local persistentgamedata
+    from an earlier run can desync the co-op session. The runner junctions the
+    game's real data folder to this tree for the duration of the session.
+    """
+    data_root = session_root / "data"
+    data_root.mkdir(parents=True, exist_ok=False)
+    digests: dict[str, str] = {}
+    for folder in mod_folders:
+        child = safe_mod_child(data_root, folder)
+        child.mkdir()
+        digests[folder] = hashlib.sha256(b"").hexdigest()  # empty, identical on both sides
+    manifest = {
+        "format": SAVEDATA_SESSION_FORMAT,
+        "schema_version": 1,
+        "savedata_sha256": load_order_digest([f"{k}:{v}" for k, v in sorted(digests.items())]),
+        "mods": digests,
+    }
+    write_json_new(session_root / "savedata-manifest.json", manifest)
+    return manifest
+
+
 def build_manifest(
     mods_dir: Path,
     log_path: Path,
     repentogon_version: str | None = None,
     game_version_override: str | None = None,
     repentogon_dir: Path | None = None,
+    allow_empty: bool = False,
 ) -> dict[str, Any]:
     mods_root = mods_dir.resolve()
     if not mods_root.is_dir():
         raise ManifestError(f"Mods-Ordner nicht gefunden: {mods_dir}")
-    folders, detected_game_version = parse_loaded_mods(log_path)
+    folders, detected_game_version = parse_loaded_mods(log_path, allow_empty)
     game_version = game_version_override or detected_game_version
     if not game_version:
         raise ManifestError("Spielversion nicht im Log gefunden; nutze --game-version.")
 
     rgon_root = repentogon_dir.resolve() if repentogon_dir else mods_root.parent / "Repentogon"
+    build_hashes = capture_build_hashes(rgon_root)
     detected_rg_version, rg_version_source = detect_repentogon_version(rgon_root)
     if repentogon_version:
         if detected_rg_version and detected_rg_version != repentogon_version:
@@ -249,6 +655,8 @@ def build_manifest(
         "repentogon_version": final_rg_version,
         "repentogon_version_source": final_rg_source,
         "load_order_source": "game-log",
+        "load_order_sha256": load_order_digest([mod_key(mod) for mod in mods]),
+        **build_hashes,
         "mods": mods,
     }
 
@@ -299,10 +707,14 @@ def build_profile(manifest: dict[str, Any], name: str) -> dict[str, Any]:
     return {
         "format": PROFILE_FORMAT,
         "schema_version": PROFILE_SCHEMA_VERSION,
+        "tool_version": TOOL_VERSION,
         "profile_name": profile_name,
         "created_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "game_version": manifest.get("game_version"),
         "repentogon_version": manifest.get("repentogon_version"),
+        "load_order_sha256": manifest.get("load_order_sha256") or load_order_digest(load_order),
+        "game_build_sha256": manifest.get("game_build_sha256"),
+        "repentogon_build_sha256": manifest.get("repentogon_build_sha256"),
         "mod_set": mod_set,
         "load_order": load_order,
     }
@@ -359,6 +771,10 @@ def load_profile(path: Path) -> dict[str, Any]:
         raise ManifestError(f"Kein {PROFILE_FORMAT}-Profil: {path}")
     if data.get("schema_version") != PROFILE_SCHEMA_VERSION:
         raise ManifestError(f"Nicht unterstuetzte Profil-Version: {path}")
+    if data.get("tool_version") != TOOL_VERSION:
+        raise ManifestError(
+            f"Versionskonflikt: Profil v{data.get('tool_version')} passt nicht zu modsync v{TOOL_VERSION}: {path}"
+        )
     profile_to_manifest(data)  # Validate set/order consistency before accepting it.
     return data
 
@@ -495,9 +911,45 @@ def compare_settings(bundle: dict[str, Any], local_export: dict[str, Any]) -> li
         for setting_key, expected_value in expected.items():
             if setting_key not in current_categories[category]:
                 differences.append(f"MCM-Setting fehlt lokal: {category}::{setting_key}")
-            elif current_categories[category][setting_key] != expected_value:
+            # Python considers True == 1; Lua/JSON do not. Compare JSON types as
+            # well as values so a boolean/number mismatch cannot be a false pass.
+            elif not same_json_value(current_categories[category][setting_key], expected_value):
                 differences.append(f"MCM-Setting unterscheidet sich: {category}::{setting_key}")
     return differences
+
+
+def same_json_value(left: Any, right: Any) -> bool:
+    """Strict recursive comparison of settings; booleans are not numbers."""
+    if isinstance(left, bool) or isinstance(right, bool):
+        return type(left) is bool and type(right) is bool and left == right
+    if isinstance(left, (int, float)) and isinstance(right, (int, float)):
+        return left == right
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        return left.keys() == right.keys() and all(same_json_value(left[key], right[key]) for key in left)
+    if isinstance(left, list):
+        return len(left) == len(right) and all(same_json_value(a, b) for a, b in zip(left, right))
+    return left == right
+
+
+def compatible_json_shape(expected: Any, current: Any) -> bool:
+    """Reject replacing a local setting with an incompatible JSON type/shape."""
+    if isinstance(expected, bool) or isinstance(current, bool):
+        return type(expected) is bool and type(current) is bool
+    if isinstance(expected, (int, float)) and isinstance(current, (int, float)):
+        return True
+    if type(expected) is not type(current):
+        return False
+    if isinstance(expected, dict):
+        return expected.keys() == current.keys() and all(
+            compatible_json_shape(expected[key], current[key]) for key in expected
+        )
+    if isinstance(expected, list):
+        return len(expected) == len(current) and all(
+            compatible_json_shape(a, b) for a, b in zip(expected, current)
+        )
+    return True
 
 
 def build_mcm_import(categories: dict[str, Any], purpose: str) -> dict[str, Any]:
@@ -541,6 +993,12 @@ def prepare_settings_imports(
             "Diese MCM-Kategorien/Settings fehlen lokal; Abbruch statt neue Werte anzulegen: "
             + ", ".join(missing)
         )
+    for category, selected_values in bundle["mcm_categories"].items():
+        for setting_key, host_value in selected_values.items():
+            if not compatible_json_shape(host_value, current_categories[category][setting_key]):
+                raise ManifestError(
+                    f"MCM-Setting hat einen inkompatiblen Werttyp oder Aufbau: {category}::{setting_key}"
+                )
     import_payload = build_mcm_import(bundle["mcm_categories"], "host-settings")
     rollback_categories = {
         category: {setting_key: current_categories[category][setting_key] for setting_key in selected_values}
@@ -725,6 +1183,7 @@ def command_create(args: argparse.Namespace) -> int:
             args.repentogon_version,
             args.game_version,
             Path(args.repentogon_dir) if args.repentogon_dir else None,
+            args.allow_empty,
         )
         output = Path(args.output)
         output.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -825,6 +1284,545 @@ def command_profile_check(args: argparse.Namespace) -> int:
         print(f"  - {difference}")
     print("Nur geprueft: keine Mods aktiviert und keine Saves/Einstellungen uebertragen.")
     return 1
+
+
+def safe_mod_child(mods_root: Path, folder: str) -> Path:
+    """Resolve one direct child mod folder without accepting traversal or links."""
+    validate_mod_folder_name(folder)
+    child = mods_root / folder
+    if child.is_symlink():
+        raise ManifestError(f"Symbolischer Link als Mod-Ordner wird nicht veraendert: {folder}")
+    try:
+        child.resolve().relative_to(mods_root.resolve())
+    except ValueError as exc:
+        raise ManifestError(f"Mod-Ordner liegt ausserhalb des Mods-Verzeichnisses: {folder}") from exc
+    return child
+
+
+def validate_mod_folder_name(folder: str) -> None:
+    """Accept only a safe single Windows/portable directory name."""
+    if (
+        not isinstance(folder, str)
+        or not folder
+        or folder in {".", ".."}
+        or folder.endswith((".", " "))
+        or any(ord(char) < 32 or char in '<>:"/\\|?*' for char in folder)
+    ):
+        raise ManifestError(f"Unsicherer Mod-Ordnername: {folder!r}")
+    device_name = folder.split(".", 1)[0].upper()
+    if device_name in {"CON", "PRN", "AUX", "NUL"} or re.fullmatch(r"(?:COM|LPT)[1-9]", device_name):
+        raise ManifestError(f"Reservierter Windows-Mod-Ordnername: {folder!r}")
+
+
+def scan_installed_mods(mods_dir: Path) -> tuple[Path, dict[str, dict[str, Any]]]:
+    """Find local mod folders and their REPENTOGON disable.it state."""
+    try:
+        mods_root = mods_dir.resolve(strict=True)
+    except OSError as exc:
+        raise ManifestError(f"Mods-Ordner nicht gefunden: {mods_dir}: {exc}") from exc
+    if not mods_root.is_dir():
+        raise ManifestError(f"Mods-Ordner ist kein Verzeichnis: {mods_dir}")
+
+    installed: dict[str, dict[str, Any]] = {}
+    try:
+        children = sorted(mods_root.iterdir(), key=lambda path: path.name.casefold())
+    except OSError as exc:
+        raise ManifestError(f"Kann Mods-Ordner nicht lesen: {mods_root}: {exc}") from exc
+
+    for child in children:
+        if child.is_symlink() or not child.is_dir():
+            continue
+        metadata_path = child / "metadata.xml"
+        content_path = child / "content"
+        if not metadata_path.exists() and not content_path.is_dir():
+            continue
+        if metadata_path.is_symlink() or content_path.is_symlink():
+            raise ManifestError(f"Symbolischer Link in Mod-Metadaten wird nicht verarbeitet: {child.name}")
+        metadata = read_metadata(child)
+        entry = {
+            "folder": child.name,
+            "path": child,
+            "key": mod_key({"workshop_id": metadata["workshop_id"], "folder": child.name}),
+            "name": metadata["name"] or child.name,
+            "version": metadata["version"],
+            "disabled": False,
+            "marker": child / "disable.it",
+        }
+        marker = entry["marker"]
+        if marker.is_symlink():
+            raise ManifestError(f"disable.it ist ein symbolischer Link: {child.name}")
+        if marker.exists() and not marker.is_file():
+            raise ManifestError(f"disable.it ist keine regulaere Datei: {child.name}")
+        entry["disabled"] = marker.exists()
+        if entry["key"] in installed:
+            raise ManifestError(f"Doppelter lokaler Mod-Schluessel: {entry['key']}")
+        installed[entry["key"]] = entry
+    return mods_root, installed
+
+
+def profile_apply_plan(
+    profile: dict[str, Any], local_manifest: dict[str, Any], mods_dir: Path
+) -> tuple[Path, list[dict[str, Any]], list[str]]:
+    """Plan an exact host mod set; block all changes on missing/changed mods."""
+    expected = profile_to_manifest(profile)
+    differences: list[str] = []
+    for label, host_value, local_value in (
+        ("Spielversion", profile.get("game_version"), local_manifest.get("game_version")),
+        ("Repentogon-Version", profile.get("repentogon_version"), local_manifest.get("repentogon_version")),
+    ):
+        if not host_value or not local_value:
+            differences.append(f"{label} fehlt; Kompatibilitaet nicht bestaetigt.")
+        elif host_value != local_value:
+            differences.append(f"{label} unterschiedlich: Host={host_value!r}, Client={local_value!r}.")
+
+    mods_root, installed = scan_installed_mods(mods_dir)
+    host_by_key = {mod_key(mod): mod for mod in expected["mods"]}
+    for key, host_mod in host_by_key.items():
+        local_mod = installed.get(key)
+        label = host_mod.get("name") or host_mod.get("folder") or key
+        if local_mod is None:
+            differences.append(f"Host-Mod fehlt lokal: {label} ({key}); nichts wurde heruntergeladen.")
+            continue
+        try:
+            digest, _file_count, _total_bytes = digest_mod(local_mod["path"])
+        except OSError as exc:
+            differences.append(f"Kann Host-Mod nicht pruefen: {label}: {exc}")
+            continue
+        if digest != host_mod.get("sha256"):
+            differences.append(f"Host-Mod weicht lokal ab: {label} ({key}); SHA-256 stimmt nicht.")
+        if local_mod.get("version") != host_mod.get("version"):
+            differences.append(f"Mod-Version weicht ab: {label} ({key}).")
+
+    plan: list[dict[str, Any]] = []
+    for key, local_mod in installed.items():
+        should_disable = key not in host_by_key
+        plan.append({
+            **local_mod,
+            "should_disable": should_disable,
+            "action": (
+                "deaktivieren" if should_disable and not local_mod["disabled"]
+                else "aktivieren" if not should_disable and local_mod["disabled"]
+                else "unveraendert"
+            ),
+        })
+    return mods_root, plan, differences
+
+
+def assert_no_mod_symlinks(source: Path) -> None:
+    for root, dirs, files in os.walk(source, followlinks=False):
+        root_path = Path(root)
+        for name in dirs + files:
+            if (root_path / name).is_symlink():
+                raise ManifestError(f"Mod enthaelt einen symbolischen Link; Temp-Kopie abgelehnt: {root_path / name}")
+
+
+def find_steamcmd_workshop_root(steamcmd: Path) -> Path:
+    return steamcmd.resolve().parent / "steamapps" / "workshop" / "content" / ISAAC_APP_ID
+
+
+def run_anonymous_workshop_download(steamcmd: Path, workshop_ids: list[str]) -> None:
+    """Use SteamCMD's anonymous login only; never read or save Steam credentials."""
+    if not workshop_ids:
+        return
+    steamcmd = steamcmd.resolve(strict=True)
+    if not steamcmd.is_file():
+        raise ManifestError(f"SteamCMD ist keine Datei: {steamcmd}")
+    command = [str(steamcmd), "+login", "anonymous"]
+    for workshop_id in sorted(set(workshop_ids)):
+        if not workshop_id.isdigit():
+            raise ManifestError(f"Ungueltige Workshop-ID; Download abgelehnt: {workshop_id!r}")
+        command.extend(("+workshop_download_item", ISAAC_APP_ID, workshop_id, "validate"))
+    command.append("+quit")
+    try:
+        result = subprocess.run(
+            command,
+            cwd=steamcmd.parent,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=1800,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ManifestError(f"SteamCMD-Workshop-Download fehlgeschlagen: {exc}") from exc
+    tail = (result.stdout + "\n" + result.stderr)[-3000:].strip()
+    if tail:
+        print("SteamCMD (anonyme Anmeldung, nur IDs aus dem Host-Profil):")
+        print(tail)
+    if result.returncode != 0:
+        print(f"WARNUNG: SteamCMD endete mit Exit-Code {result.returncode}; Hash-Pruefung folgt.")
+
+
+def _validate_profile_source(source: Path, host_mod: dict[str, Any]) -> tuple[str, str | None]:
+    if source.is_symlink() or not source.is_dir():
+        raise ManifestError(f"Mod-Quelle fehlt oder ist ein Link: {source}")
+    metadata_path = source / "metadata.xml"
+    if metadata_path.is_symlink():
+        raise ManifestError(f"Mod-Metadaten sind ein symbolischer Link: {source}")
+    metadata = read_metadata(source)
+    source_key = mod_key({"workshop_id": metadata["workshop_id"], "folder": source.name})
+    if source_key != mod_key(host_mod):
+        raise ManifestError(f"Workshop-ID/Mod-Ordner passt nicht zum Host-Profil: {source}")
+    if metadata.get("version") != host_mod.get("version"):
+        raise ManifestError(f"Metadaten-Version weicht vom Host-Profil ab: {source}")
+    assert_no_mod_symlinks(source)
+    digest, _file_count, _total_bytes = digest_mod(source)
+    if digest != host_mod.get("sha256"):
+        raise ManifestError(f"SHA-256 weicht vom Host-Profil ab: {source}")
+    return digest, metadata.get("version")
+
+
+def _copy_mod_for_session(source: Path, destination: Path) -> None:
+    source = source.resolve(strict=True)
+    assert_no_mod_symlinks(source)
+
+    def ignored(directory: str, names: list[str]) -> list[str]:
+        current = Path(directory)
+        ignored_names = []
+        for name in names:
+            path = current / name
+            if path.is_dir() and name.casefold() in IGNORED_DIRS:
+                ignored_names.append(name)
+            elif path.is_file() and (
+                path.suffix.casefold() in IGNORED_SUFFIXES
+                or (current == source and name.casefold() == "disable.it")
+            ):
+                ignored_names.append(name)
+        return ignored_names
+
+    shutil.copytree(source, destination, ignore=ignored)
+
+
+def stage_profile_session(
+    profile: dict[str, Any],
+    local_manifest: dict[str, Any],
+    mods_dir: Path,
+    workshop_cache: Path | None,
+    steamcmd: Path | None,
+    session_root: Path,
+) -> tuple[Path, list[dict[str, Any]]]:
+    """Copy exact host mods into a fresh temp tree; do not touch the live mods dir."""
+    expected = profile_to_manifest(profile)
+    anti_desync = anti_desync_checks(profile, local_manifest)
+
+    mods_root, installed = scan_installed_mods(mods_dir)
+    temp_root = Path(tempfile.gettempdir()).resolve()
+    session_root = session_root.resolve()
+    try:
+        session_root.relative_to(temp_root)
+    except ValueError as exc:
+        raise ManifestError(f"Session-Ziel muss unter dem Temp-Ordner liegen: {temp_root}") from exc
+    if session_root == temp_root or session_root.exists():
+        raise ManifestError(f"Temp-Session-Ziel muss neu und eindeutig sein: {session_root}")
+
+    cache_roots: list[Path] = []
+    if workshop_cache is not None:
+        cache_roots.append(workshop_cache.resolve())
+    if steamcmd is not None:
+        cache_roots.append(find_steamcmd_workshop_root(steamcmd))
+
+    source_by_key: dict[str, Path] = {}
+    unresolved: list[dict[str, Any]] = []
+    blocked: list[str] = []
+    for host_mod in expected["mods"]:
+        key = mod_key(host_mod)
+        try:
+            validate_mod_folder_name(host_mod.get("folder"))
+        except ManifestError as exc:
+            blocked.append(str(exc))
+            continue
+        candidates: list[Path] = []
+        local = installed.get(key)
+        if local is not None:
+            candidates.append(local["path"])
+        workshop_id = host_mod.get("workshop_id")
+        if workshop_id:
+            candidates.extend(cache_root / str(workshop_id) for cache_root in cache_roots)
+        found = None
+        for candidate in candidates:
+            try:
+                _validate_profile_source(candidate, host_mod)
+                found = candidate
+                break
+            except ManifestError:
+                continue
+        if found is not None:
+            source_by_key[key] = found
+        else:
+            unresolved.append(host_mod)
+
+    download_ids = [str(mod["workshop_id"]) for mod in unresolved if mod.get("workshop_id")]
+    if download_ids and steamcmd is not None:
+        run_anonymous_workshop_download(steamcmd, download_ids)
+        refreshed_root = find_steamcmd_workshop_root(steamcmd)
+        for host_mod in unresolved[:]:
+            workshop_id = host_mod.get("workshop_id")
+            if not workshop_id:
+                continue
+            candidate = refreshed_root / str(workshop_id)
+            try:
+                _validate_profile_source(candidate, host_mod)
+            except ManifestError:
+                continue
+            source_by_key[mod_key(host_mod)] = candidate
+            unresolved.remove(host_mod)
+
+    if unresolved:
+        for host_mod in unresolved:
+            label = host_mod.get("name") or host_mod.get("folder")
+            if host_mod.get("workshop_id"):
+                blocked.append(
+                    f"Workshop-Mod nicht verfuegbar/hashfalsch: {label} (ID {host_mod['workshop_id']}). "
+                    "SteamCMD mit anonymer Anmeldung konnte ihn nicht verifizieren."
+                )
+            else:
+                blocked.append(f"Lokaler Host-Mod fehlt oder ist veraendert: {label}; kein Workshop-ID-Download moeglich.")
+    if blocked:
+        raise ManifestError("\n  - " + "\n  - ".join(blocked))
+
+    session_root.parent.mkdir(parents=True, exist_ok=True)
+    session_root.mkdir()
+    stage_dir = session_root / "mods"
+    stage_dir.mkdir()
+    staged: list[dict[str, Any]] = []
+    try:
+        for host_mod in expected["mods"]:
+            key = mod_key(host_mod)
+            destination = safe_mod_child(stage_dir, str(host_mod["folder"]))
+            _copy_mod_for_session(source_by_key[key], destination)
+            digest, _file_count, _total_bytes = digest_mod(destination)
+            if digest != host_mod["sha256"]:
+                raise ManifestError(f"Temp-Kopie nach dem Schreiben nicht hash-identisch: {host_mod.get('name')}")
+            staged.append({
+                "folder": host_mod["folder"],
+                "workshop_id": host_mod.get("workshop_id"),
+                "name": host_mod.get("name"),
+                "version": host_mod.get("version"),
+                "sha256": digest,
+            })
+        if any(str(mod.get("folder", "")).casefold() == LOBBY_OBSERVER_FOLDER.casefold() for mod in expected["mods"]):
+            raise ManifestError(
+                f"Host-Profil verwendet den reservierten Temp-Helfer-Ordner {LOBBY_OBSERVER_FOLDER}."
+            )
+        observer_dir = safe_mod_child(stage_dir, LOBBY_OBSERVER_FOLDER)
+        observer_dir.mkdir()
+        (observer_dir / "metadata.xml").write_text(LOBBY_OBSERVER_METADATA, encoding="utf-8")
+        expected_hashes = {mod_key(mod): mod["sha256"] for mod in expected["mods"]}
+        expected_order = [str(mod.get("folder")) for mod in expected["mods"]]
+        (observer_dir / "main.lua").write_text(
+            build_observer_lua(expected_order, expected_hashes), encoding="utf-8"
+        )
+        observer_digest, _observer_files, _observer_bytes = digest_mod(observer_dir)
+        savedata = stage_savedata(session_root, [str(mod["folder"]) for mod in expected["mods"]])
+        staged.append({
+            "folder": LOBBY_OBSERVER_FOLDER,
+            "workshop_id": None,
+            "name": LOBBY_OBSERVER_NAME,
+            "version": "0.0.6",
+            "sha256": observer_digest,
+            "temporary_helper": True,
+        })
+        session_data = {
+            "format": SESSION_FORMAT,
+            "schema_version": SESSION_SCHEMA_VERSION,
+            "session_id": session_root.name,
+            "created_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "profile_name": profile["profile_name"],
+            "host_mod_count": len(expected["mods"]),
+            "lobby_exit_observer_count": 1,
+            "game_version": profile.get("game_version"),
+            "repentogon_version": profile.get("repentogon_version"),
+            "anti_desync": anti_desync,
+            "savedata_sha256": savedata["savedata_sha256"],
+            "mods": staged,
+        }
+        write_json_new(session_root / "session.json", session_data)
+        write_json_new(session_root / "anti-desync.json", anti_desync)
+    except Exception:
+        shutil.rmtree(session_root, ignore_errors=True)
+        raise
+    return stage_dir, staged
+
+
+def marker_bytes(marker: Path) -> bytes | None:
+    if marker.is_symlink():
+        raise ManifestError(f"disable.it wurde durch einen symbolischen Link ersetzt: {marker}")
+    if not marker.exists():
+        return None
+    if not marker.is_file():
+        raise ManifestError(f"disable.it ist keine regulaere Datei: {marker}")
+    try:
+        return marker.read_bytes()
+    except OSError as exc:
+        raise ManifestError(f"Kann disable.it nicht lesen: {marker}: {exc}") from exc
+
+
+def restore_marker(marker: Path, contents: bytes | None) -> None:
+    if contents is None:
+        marker.unlink(missing_ok=True)
+        return
+    temporary = marker.with_name(marker.name + ".modsync-tmp")
+    if temporary.exists() or temporary.is_symlink():
+        raise ManifestError(f"Rollback-Zieldatei existiert bereits: {temporary}")
+    try:
+        with temporary.open("xb") as stream:
+            stream.write(contents)
+        os.replace(temporary, marker)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def apply_profile_markers(
+    plan: list[dict[str, Any]], rollback_path: Path, mods_root: Path
+) -> int:
+    """Apply enable markers transactionally and create a one-use rollback file."""
+    changes = [entry for entry in plan if entry["action"] != "unveraendert"]
+    if not changes:
+        print("Mod-Aktivierung entspricht bereits dem Host-Profil; nichts zu aendern.")
+        return 0
+    rollback_path = rollback_path.resolve()
+    try:
+        rollback_path.relative_to(mods_root.resolve())
+    except ValueError:
+        pass
+    else:
+        raise ManifestError("Rollback-Datei muss ausserhalb des Spiel-Mods-Ordners liegen.")
+
+    rollback = {
+        "format": PROFILE_ROLLBACK_FORMAT,
+        "schema_version": PROFILE_ROLLBACK_SCHEMA_VERSION,
+        "created_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "mods_dir": str(mods_root),
+        "changes": [],
+    }
+    for entry in changes:
+        marker = entry["marker"]
+        original = marker_bytes(marker)
+        expected_disabled = entry["should_disable"]
+        if (original is not None) != entry["disabled"]:
+            raise ManifestError(f"Mod-Status hat sich waehrend der Vorschau geaendert: {entry['folder']}")
+        applied = b"" if expected_disabled else None
+        rollback["changes"].append({
+            "folder": entry["folder"],
+            "was_disabled": entry["disabled"],
+            "original_marker_base64": base64.b64encode(original).decode("ascii") if original is not None else None,
+            "applied_marker_base64": base64.b64encode(applied).decode("ascii") if applied is not None else None,
+        })
+
+    write_json_new(rollback_path, rollback)
+    changed: list[tuple[Path, bytes | None]] = []
+    try:
+        for entry, saved in zip(changes, rollback["changes"]):
+            marker = entry["marker"]
+            original = base64.b64decode(saved["original_marker_base64"]) if saved["original_marker_base64"] is not None else None
+            if marker_bytes(marker) != original:
+                raise ManifestError(f"Mod-Status hat sich unmittelbar vor dem Schreiben geaendert: {entry['folder']}")
+            if entry["should_disable"]:
+                with marker.open("xb"):
+                    pass
+            else:
+                marker.unlink()
+            changed.append((marker, original))
+    except Exception:
+        for marker, original in reversed(changed):
+            restore_marker(marker, original)
+        rollback_path.unlink(missing_ok=True)
+        raise
+    print(f"Host-Mod-Profil angewendet: {len(changes)} Mod(s) umgeschaltet.")
+    print(f"Rueckgaengig-Datei: {rollback_path}")
+    print("Es wurden keine Mods heruntergeladen/kopiert und keine Saves/Settings geaendert.")
+    return 0
+
+
+def command_profile_apply(args: argparse.Namespace) -> int:
+    try:
+        profile = load_profile(Path(args.profile))
+        local_manifest = load_manifest(Path(args.local_manifest))
+        mods_root, plan, differences = profile_apply_plan(profile, local_manifest, Path(args.mods_dir))
+        print(f"Vorschau fuer Host-Profil '{profile['profile_name']}':")
+        for entry in plan:
+            print(f"  {entry['action']}: {entry['name']} [{entry['folder']}]")
+        if differences:
+            print("ABBRUCH: Erst die Host-Mods/Versionen angleichen; nichts wurde geaendert:")
+            for difference in differences:
+                print(f"  - {difference}")
+            return 1
+        if not args.apply:
+            print("Nur Vorschau. Mit --apply anwenden; dabei werden lokale Zusatz-Mods deaktiviert.")
+            return 0
+        apply_profile_markers(plan, Path(args.rollback_output), mods_root)
+    except (ManifestError, OSError, ValueError) as exc:
+        print(f"FEHLER: {exc}", file=sys.stderr)
+        return 2
+    return 0
+
+
+def command_profile_restore(args: argparse.Namespace) -> int:
+    try:
+        rollback_path = Path(args.rollback)
+        rollback = json.loads(rollback_path.read_text(encoding="utf-8-sig"))
+        if not isinstance(rollback, dict) or rollback.get("format") != PROFILE_ROLLBACK_FORMAT:
+            raise ManifestError(f"Keine {PROFILE_ROLLBACK_FORMAT}-Datei: {rollback_path}")
+        if rollback.get("schema_version") != PROFILE_ROLLBACK_SCHEMA_VERSION:
+            raise ManifestError("Nicht unterstuetzte Rollback-Datei-Version.")
+        mods_root, installed = scan_installed_mods(Path(args.mods_dir))
+        if str(mods_root) != rollback.get("mods_dir"):
+            raise ManifestError("Rollback-Datei gehoert zu einem anderen Mods-Ordner.")
+        changes = rollback.get("changes")
+        if not isinstance(changes, list):
+            raise ManifestError("Rollback-Datei enthaelt keine gueltige Aenderungsliste.")
+
+        prepared: list[tuple[Path, bytes | None]] = []
+        for change in changes:
+            if not isinstance(change, dict) or not isinstance(change.get("folder"), str):
+                raise ManifestError("Ungueltiger Eintrag in der Rollback-Datei.")
+            folder = change["folder"]
+            safe_mod_child(mods_root, folder)
+            entry = next((item for item in installed.values() if item["folder"] == folder), None)
+            if entry is None:
+                raise ManifestError(f"Mod fehlt beim Zuruecksetzen: {folder}")
+            applied_encoded = change.get("applied_marker_base64")
+            original_encoded = change.get("original_marker_base64")
+            applied = base64.b64decode(applied_encoded, validate=True) if applied_encoded is not None else None
+            original = base64.b64decode(original_encoded, validate=True) if original_encoded is not None else None
+            if marker_bytes(entry["marker"]) != applied:
+                raise ManifestError(
+                    f"Mod-Status wurde seit dem Anwenden geaendert; Abbruch statt Ueberschreiben: {folder}"
+                )
+            prepared.append((entry["marker"], original))
+
+        for marker, original in prepared:
+            restore_marker(marker, original)
+    except (ManifestError, OSError, ValueError, json.JSONDecodeError) as exc:
+        print(f"FEHLER: {exc}", file=sys.stderr)
+        return 2
+    print(f"Mod-Aktivierungszustand aus {rollback_path} wiederhergestellt.")
+    print("Die Rollback-Datei bleibt als Nachweis erhalten; sie kann nicht sicher ein zweites Mal angewendet werden.")
+    return 0
+
+
+def command_profile_stage(args: argparse.Namespace) -> int:
+    try:
+        profile = load_profile(Path(args.profile))
+        local_manifest = load_manifest(Path(args.local_manifest))
+        workshop_cache = Path(args.workshop_cache) if args.workshop_cache else None
+        steamcmd = Path(args.steamcmd) if args.steamcmd else None
+        stage_dir, staged = stage_profile_session(
+            profile,
+            local_manifest,
+            Path(args.mods_dir),
+            workshop_cache,
+            steamcmd,
+            Path(args.output),
+        )
+    except (ManifestError, OSError, ValueError) as exc:
+        print(f"FEHLER: {exc}", file=sys.stderr)
+        return 2
+    print(f"Temp-Mod-Set bereit: {stage_dir}")
+    print(f"Profil={profile['profile_name']} Host-Mods={len(profile['mod_set'])} Temp-Beobachter=1")
+    print("Nur Mods aus diesem Host-Profil wurden in den Temp-Ordner kopiert; Original-Mods blieben unveraendert.")
+    print("SteamCMD verwendet ausschliesslich 'anonymous'; es wurden keine Steam-Zugangsdaten gelesen oder gespeichert.")
+    return 0
 
 
 def write_json_new(path: Path, data: dict[str, Any]) -> None:
@@ -944,11 +1942,51 @@ def command_settings_prepare(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_lobby_log_scan(args: argparse.Namespace) -> int:
+    """Scan a captured log for diagnostic hints, never as authorization."""
+    tracker = LobbyLogTracker()
+    try:
+        with Path(args.log).open("rb") as stream:
+            while chunk := stream.read(65536):
+                for kind, lobby in tracker.feed(chunk):
+                    print(f"{kind}: {lobby if lobby is not None else 'unbekannt'}")
+    except (OSError, ManifestError) as exc:
+        print(f"FEHLER: {exc}", file=sys.stderr)
+        return 2
+    print("Nur Log-Hinweise; Lobby-ID und Teilnehmer muessen separat ueber Steam verifiziert werden.")
+    return 0
+
+
+def command_anti_desync_check(args: argparse.Namespace) -> int:
+    """Pre-start prevention gate: print a compact report and fail closed."""
+    try:
+        profile = load_profile(Path(args.profile))
+        local = load_manifest(Path(args.local_manifest))
+        report = anti_desync_checks(profile, local)
+    except (ManifestError, OSError, ValueError) as exc:
+        print(f"ANTI-DESYNC BLOCKIERT: {exc}", file=sys.stderr)
+        return 2
+    print("ANTI-DESYNC OK: Ladereihenfolge, Build-Hashes und Versionen stimmen ueberein.")
+    for check in report["checks"]:
+        print(f"  - {check['name']}: {check['status']}")
+    print(f"  - Mods: {len(report['load_order'])} | Reihenfolge-Hash: {report['load_order_sha256'][:16]}")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Isaac-Mod-Manifeste und Saves-freie Mod-Profile erstellen und pruefen."
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+    anti_desync = subparsers.add_parser(
+        "anti-desync-check", help="Anti-Desync-Gate vor dem Spielstart (Reihenfolge, Build-Hashes, Versionen)"
+    )
+    anti_desync.add_argument("--profile", required=True, help="vertrautes Host-Mod-Profil JSON")
+    anti_desync.add_argument("--local-manifest", required=True, help="aktuelles lokales Mod-Manifest")
+    anti_desync.set_defaults(func=command_anti_desync_check)
+    lobby_log = subparsers.add_parser("lobby-log-scan", help="aufgezeichnetes Spiel-Log lesend auf Lobby-Hinweise pruefen")
+    lobby_log.add_argument("--log", required=True, help="aufgezeichnetes Spiel-Log (kein Steam-Zugriff)")
+    lobby_log.set_defaults(func=command_lobby_log_scan)
     create = subparsers.add_parser("create", help="Manifest der aktuell geladenen Mods erstellen")
     create.add_argument("--mods-dir", required=True, help="Isaac-Mods-Ordner")
     create.add_argument("--log", required=True, help="aktuelles Spiel-log.txt mit LOADED MOD-Zeilen")
@@ -961,6 +1999,7 @@ def main() -> int:
         help="verifizierte Repentogon-Version manuell angeben; Widerspruch zur Installation wird abgelehnt",
     )
     create.add_argument("--game-version", help="Spielversion ueberschreiben (normalerweise aus dem Log erkannt)")
+    create.add_argument("--allow-empty", action="store_true", help="auch ein Manifest ohne geladene Mods fuer lokale Versionspruefung schreiben")
     create.add_argument("--output", default="mod-manifest.json", help="Zieldatei (JSON)")
     create.set_defaults(func=command_create)
 
@@ -995,6 +2034,34 @@ def main() -> int:
     profile_check.add_argument("--profile", required=True, help="Mod-Profil JSON")
     profile_check.add_argument("--local", required=True, help="aktuelles lokales Mod-Manifest")
     profile_check.set_defaults(func=command_profile_check)
+
+    profile_apply = profile_subparsers.add_parser(
+        "apply", help="Host-Mods lokal aktivieren und Extras reversibel deaktivieren"
+    )
+    profile_apply.add_argument("--profile", required=True, help="Host-Mod-Profil JSON")
+    profile_apply.add_argument("--local-manifest", required=True, help="lokales Manifest fuer Spiel-/REPENTOGON-Version")
+    profile_apply.add_argument("--mods-dir", required=True, help="lokaler Isaac-Mods-Ordner")
+    profile_apply.add_argument("--rollback-output", required=True, help="neue Rollback-JSON-Datei ausserhalb des Mods-Ordners")
+    profile_apply.add_argument("--apply", action="store_true", help="Vorschau anwenden; ohne Flag wird nichts geaendert")
+    profile_apply.set_defaults(func=command_profile_apply)
+
+    profile_restore = profile_subparsers.add_parser(
+        "restore", help="vorherige lokale Mod-Aktivierung aus einer Rollback-Datei wiederherstellen"
+    )
+    profile_restore.add_argument("--rollback", required=True, help="Rollback-JSON aus profile apply")
+    profile_restore.add_argument("--mods-dir", required=True, help="derselbe lokale Isaac-Mods-Ordner")
+    profile_restore.set_defaults(func=command_profile_restore)
+
+    profile_stage = profile_subparsers.add_parser(
+        "stage", help="Host-Mods hash-geprueft in einen temporaeren Session-Ordner kopieren"
+    )
+    profile_stage.add_argument("--profile", required=True, help="vertrautes Host-Mod-Profil JSON")
+    profile_stage.add_argument("--local-manifest", required=True, help="lokales Manifest fuer Spiel-/REPENTOGON-Version")
+    profile_stage.add_argument("--mods-dir", required=True, help="lokaler Isaac-Mods-Ordner")
+    profile_stage.add_argument("--output", required=True, help="neuer Session-Ordner unter TEMP")
+    profile_stage.add_argument("--workshop-cache", help="optionaler Steam Workshop Cache fuer App 250900")
+    profile_stage.add_argument("--steamcmd", help="SteamCMD-Dateipfad; nur anonyme Workshop-Downloads")
+    profile_stage.set_defaults(func=command_profile_stage)
 
     settings = subparsers.add_parser(
         "settings", help="explizite MCM-Settings exportieren, vergleichen und vorbereiten"
