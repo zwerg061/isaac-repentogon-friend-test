@@ -236,39 +236,45 @@ function Get-LauncherIniPath {
     return Join-Path $env:USERPROFILE 'Documents\My Games\repentogon_launcher.ini'
 }
 
-function Set-LauncherLaunchModeVanilla {
-    # Sandbox config uses LaunchMode = 0; the real install had 1, which makes the
-    # game show "Change the Launch Mode to Vanilla ... to play Online".
+function Set-LauncherSandboxConfig([string]$IsaacRoot) {
+    # Exact values from the working sandbox launcher config: no auto update,
+    # correct <IsaacRoot>\isaac-ng.exe path, stealth/no-window and LaunchMode 0.
     $ini = Get-LauncherIniPath
-    if (-not (Test-Path -LiteralPath $ini -PathType Leaf)) { return $null }
     $backup = "$ini.orig"
-    if (-not (Test-Path -LiteralPath $backup -PathType Leaf)) {
-        Copy-FileWithRetry $ini $backup
-        Write-Log "Launcher-INI gesichert: $backup"
-    }
-    $originalHash = Get-Sha256 $backup
-    $lines = @(Get-Content -LiteralPath $ini -Encoding UTF8)
-    $clean = New-Object 'System.Collections.Generic.List[string]'
-    foreach ($line in $lines) {
-        if ($line -match '^[ \t]*LaunchMode[ \t]*=') { continue }
-        $clean.Add($line)
-    }
-    $sharedIndex = -1
-    for ($i = 0; $i -lt $clean.Count; $i++) {
-        if ($clean[$i] -match '^[ \t]*\[Shared\][ \t]*$') { $sharedIndex = $i; break }
-    }
-    if ($sharedIndex -ge 0) {
-        $clean.Insert($sharedIndex + 1, 'LaunchMode = 0')
+    if (Test-Path -LiteralPath $ini -PathType Leaf) {
+        if (-not (Test-Path -LiteralPath $backup -PathType Leaf)) {
+            Copy-FileWithRetry $ini $backup
+            Write-Log "Launcher-INI gesichert: $backup"
+        }
+        $originalHash = Get-Sha256 $backup
     } else {
-        $clean.Add('[Shared]')
-        $clean.Add('LaunchMode = 0')
+        $originalHash = $null
     }
-    $text = ($clean -join "`r`n") + "`r`n"
+    $root = Get-NormalizedPath $IsaacRoot
+    $text = @"
+[General]
+IsaacExecutable = $root\isaac-ng.exe
+RanWizard = 1
+HideWindow = 1
+StealthMode = 1
+[Repentogon]
+Console = 1
+Update = 0
+UnstableUpdates = 0
+SkipUpdateMods = 1
+SkipWaitModDownloads = 1
+AutoUpdate = 0
+[Vanilla]
+LuaHeapSize = 1024M
+LuaDebug = 0
+[Shared]
+LaunchMode = 0
+"@
     Invoke-WithRetry {
         Clear-ReadOnly $ini
-        [IO.File]::WriteAllText($ini, $text, [Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($ini, ($text -join "`r`n") + "`r`n", [Text.UTF8Encoding]::new($false))
     } "Schreiben von $ini"
-    Write-Log 'Launcher-LaunchMode auf 0 (Vanilla-kompatibel) gesetzt.'
+    Write-Log 'Launcher-INI auf Sandbox-Werte gesetzt (AutoUpdate=0, korrekter Isaac-Pfad, LaunchMode=0).'
     return @{ path = $ini; backup = $backup; original_sha256 = $originalHash }
 }
 
@@ -456,9 +462,12 @@ RanWizard = 1
 HideWindow = 1
 StealthMode = 1
 [Repentogon]
-Console = 0
+Console = 1
 Update = 0
 UnstableUpdates = 0
+SkipUpdateMods = 1
+SkipWaitModDownloads = 1
+AutoUpdate = 0
 [Vanilla]
 LuaDebug = 0
 [Shared]
@@ -552,6 +561,9 @@ function Invoke-Apply {
     $patched = if ($PatchedDll) { [IO.Path]::GetFullPath($PatchedDll) } else { Join-Path $ToolsRoot 'zhlREPENTOGON.dll' }
     if (-not (Test-Path -LiteralPath $patched -PathType Leaf)) { throw "Gepatchte DLL fehlt: $patched" }
     $patchedHash = Get-Sha256 $patched
+    # Set the launcher config FIRST: Update=0 prevents the next launcher start
+    # from overwriting our patched DLL with the official 1.1.3a build.
+    $launcherIni = Set-LauncherSandboxConfig $root
     $installedByUs = @()
     if (-not (Test-RepentogonInstalled $root)) { $installedByUs = @(Install-Repentogon $root) }
     $dll = Get-RepentogonDllPath $root
@@ -568,7 +580,12 @@ function Invoke-Apply {
         Copy-FileWithRetry $patched $dll
         if ((Get-Sha256 $dll) -ne $patchedHash) { throw 'Gepatchte DLL konnte nicht verifiziert werden.' }
     }
-    $launcherIni = Set-LauncherLaunchModeVanilla
+    # Write-protect the patched DLL so a stray auto-update cannot replace it.
+    $dllAttributes = [IO.File]::GetAttributes($dll)
+    if (($dllAttributes -band [IO.FileAttributes]::ReadOnly) -eq 0) {
+        [IO.File]::SetAttributes($dll, ($dllAttributes -bor [IO.FileAttributes]::ReadOnly))
+        Write-Log 'Gepatchte DLL schreibgeschuetzt (Schutz vor Auto-Update).'
+    }
     $state = [ordered]@{
         schema_version = 1
         applied = $true
@@ -615,6 +632,7 @@ function Invoke-Uninstall {
         $backupHash = Get-Sha256 $state.backup_path
         if ($backupHash -ne $state.original_dll_sha256) { throw 'Gesicherte Original-DLL hat unerwarteten Hash - Abbruch.' }
         $target = $state.dll_path
+        Clear-ReadOnly $target
         $currentHash = if (Test-Path -LiteralPath $target -PathType Leaf) { Get-Sha256 $target } else { $null }
         if ($currentHash -ne $backupHash) {
             Copy-FileWithRetry $state.backup_path $target

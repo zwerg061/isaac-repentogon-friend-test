@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.0.15 - final: sandbox launcher config, auto-update lock, safe start
+
+- Global `%USERPROFILE%\Documents\My Games\repentogon_launcher.ini` is backed up
+  once as `.orig` and replaced with the exact working sandbox values:
+  `IsaacExecutable = <IsaacRoot>\isaac-ng.exe`, `Update = 0`, `AutoUpdate = 0`,
+  `SkipUpdateMods = 1`, `SkipWaitModDownloads = 1`, `LaunchMode = 0`.
+  This stops "Forcibly updating REPENTOGON" from overwriting our patched DLL.
+- The patched `Repentogon\zhlREPENTOGON.dll` is set read-only after install;
+  the flag is cleared and the exact original DLL restored on uninstall.
+- Game start uses the sandbox flags and never fails the Apply; Steam fallback
+  remains in place.
+
 ## 0.0.15 - game start is best-effort, with Steam fallback
 
 - `Start-IsaacDirect()` no longer throws when the hidden launcher does not
