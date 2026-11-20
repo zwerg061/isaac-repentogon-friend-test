@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.0.16 - Steam lobby joins are forwarded again
+
+- Removed the upstream `Menu_Game::UnknownJoinLobby` no-op hook from the patched
+  REPENTOGON source. The hook now logs `[modsync] UnknownJoinLobby forwarded`
+  and calls `super(unk1, unk2, unk3)`, so a client clicking "Join" on a private
+  friend lobby is no longer silently ignored.
+- Rebuilt `zhlREPENTOGON.dll` (`1CB56EBB…`) from the same 1.1.3 source; the
+  matching `zhlLoader.dll`/`libzhl.dll` (both 1.1.3) are unchanged.
+- Log-verified: all three DLLs 1.1.3, installation valid, injector started,
+  no version mismatch / force update. Applied directly to the real install.
+
 ## 0.0.15 - final: matching ZHL DLL trio from one build
 
 - The launcher validates that `zhlLoader.dll`, `libzhl.dll` and
