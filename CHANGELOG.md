@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.0.13 - sandbox parity: patch the loaded DLL and set LaunchMode = 0
+
+- Root cause of "Change the Launch Mode to Vanilla ... to play Online":
+  the launcher starts `<Isaac>\Repentogon\isaac-ng.exe`, so the DLL actually
+  loaded is `<Isaac>\Repentogon\zhlREPENTOGON.dll`. The old code patched only
+  the game root, which is not used in that launch path.
+- `Get-RepentogonDllPath()` now prefers the `Repentogon` folder whenever
+  `Repentogon\isaac-ng.exe` exists - exactly like the working sandbox.
+- Additionally, `%USERPROFILE%\Documents\My Games\repentogon_launcher.ini` is
+  backed up once as `.orig` and its `[Shared] LaunchMode` is set to `0`
+  (sandbox value). Both changes are restored exactly on uninstall.
+
 ## 0.0.12 - final XML: staged extraction and rename-before-write for every file
 
 - `Install-ModSyncPatch.ps1` no longer calls `ExtractToFile` with the game

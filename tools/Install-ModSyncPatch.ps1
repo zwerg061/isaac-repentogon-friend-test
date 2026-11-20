@@ -218,10 +218,71 @@ function Find-IsaacRoot {
 }
 
 function Get-RepentogonDllPath([string]$Root) {
+    # The launcher starts <Root>\Repentogon\isaac-ng.exe when that folder exists,
+    # so THAT is the DLL which is actually loaded. The sandbox works because its
+    # patched DLL sits in this folder - patching only the game root is not enough.
+    $repentogonExe = Join-Path $Root 'Repentogon\isaac-ng.exe'
+    if (Test-Path -LiteralPath $repentogonExe -PathType Leaf) {
+        $active = Join-Path $Root 'Repentogon\zhlREPENTOGON.dll'
+        if (Test-Path -LiteralPath $active -PathType Leaf) { return $active }
+    }
     foreach ($candidate in @((Join-Path $Root 'zhlREPENTOGON.dll'), (Join-Path $Root 'Repentogon\zhlREPENTOGON.dll'))) {
         if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
     }
     return $null
+}
+
+function Get-LauncherIniPath {
+    return Join-Path $env:USERPROFILE 'Documents\My Games\repentogon_launcher.ini'
+}
+
+function Set-LauncherLaunchModeVanilla {
+    # Sandbox config uses LaunchMode = 0; the real install had 1, which makes the
+    # game show "Change the Launch Mode to Vanilla ... to play Online".
+    $ini = Get-LauncherIniPath
+    if (-not (Test-Path -LiteralPath $ini -PathType Leaf)) { return $null }
+    $backup = "$ini.orig"
+    if (-not (Test-Path -LiteralPath $backup -PathType Leaf)) {
+        Copy-FileWithRetry $ini $backup
+        Write-Log "Launcher-INI gesichert: $backup"
+    }
+    $originalHash = Get-Sha256 $backup
+    $lines = @(Get-Content -LiteralPath $ini -Encoding UTF8)
+    $clean = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($line in $lines) {
+        if ($line -match '^[ \t]*LaunchMode[ \t]*=') { continue }
+        $clean.Add($line)
+    }
+    $sharedIndex = -1
+    for ($i = 0; $i -lt $clean.Count; $i++) {
+        if ($clean[$i] -match '^[ \t]*\[Shared\][ \t]*$') { $sharedIndex = $i; break }
+    }
+    if ($sharedIndex -ge 0) {
+        $clean.Insert($sharedIndex + 1, 'LaunchMode = 0')
+    } else {
+        $clean.Add('[Shared]')
+        $clean.Add('LaunchMode = 0')
+    }
+    $text = ($clean -join "`r`n") + "`r`n"
+    Invoke-WithRetry {
+        Clear-ReadOnly $ini
+        [IO.File]::WriteAllText($ini, $text, [Text.UTF8Encoding]::new($false))
+    } "Schreiben von $ini"
+    Write-Log 'Launcher-LaunchMode auf 0 (Vanilla-kompatibel) gesetzt.'
+    return @{ path = $ini; backup = $backup; original_sha256 = $originalHash }
+}
+
+function Restore-LauncherIni($State) {
+    if (-not $State -or -not $State.launcher_ini_backup) { return }
+    $backup = $State.launcher_ini_backup
+    if (-not (Test-Path -LiteralPath $backup -PathType Leaf)) { return }
+    if ((Get-Sha256 $backup) -ne $State.launcher_ini_original_sha256) {
+        throw 'Gesicherte Launcher-INI hat unerwarteten Hash - Abbruch.'
+    }
+    Copy-FileWithRetry $backup $State.launcher_ini_path
+    Clear-ReadOnly $backup
+    Remove-Item -LiteralPath $backup -Force
+    Write-Log 'Launcher-INI exakt wiederhergestellt.'
 }
 
 function Test-RepentogonInstalled([string]$Root) {
@@ -479,6 +540,7 @@ function Invoke-Apply {
         Copy-FileWithRetry $patched $dll
         if ((Get-Sha256 $dll) -ne $patchedHash) { throw 'Gepatchte DLL konnte nicht verifiziert werden.' }
     }
+    $launcherIni = Set-LauncherLaunchModeVanilla
     $state = [ordered]@{
         schema_version = 1
         applied = $true
@@ -490,6 +552,9 @@ function Invoke-Apply {
         repentogon_installed_by_us = ($installedByUs.Count -gt 0)
         installed_files = @($installedByUs)
         companion_path = if ($CompanionExe) { $CompanionExe } else { Join-Path $ToolsRoot $script:CompanionName }
+        launcher_ini_path = if ($launcherIni) { $launcherIni.path } else { $null }
+        launcher_ini_backup = if ($launcherIni) { $launcherIni.backup } else { $null }
+        launcher_ini_original_sha256 = if ($launcherIni) { $launcherIni.original_sha256 } else { $null }
         applied_utc = [DateTime]::UtcNow.ToString('o')
     }
     Save-State $state
@@ -531,6 +596,7 @@ function Invoke-Uninstall {
         Remove-Item -LiteralPath $state.backup_path -Force
         Write-Log 'Original-DLL exakt wiederhergestellt.'
     }
+    Restore-LauncherIni $state
     if ($root) { Remove-HelperMods $root }
     Unregister-Uninstall
     if (Test-Path -LiteralPath $script:StatePath) { Remove-Item -LiteralPath $script:StatePath -Force }
