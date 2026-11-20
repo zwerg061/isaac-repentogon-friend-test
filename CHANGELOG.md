@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.0.12 - removed hidden test-path overrides from production
+
+- `FriendTestSetup.cpp::FindIsaacRoot()` no longer reads
+  `ISAAC_MODSYNC_TEST_ISAAC_ROOT`; `Install-ModSyncPatch.ps1` no longer reads
+  `ISAAC_MODSYNC_TEST_ISAAC_ROOT` or `ISAAC_MODSYNC_TEST_STAGING_ROOT`.
+  A shipping setup can therefore never pick up a `setup-ui-error-*` fixture
+  path. It always uses the real Steam installation or opens the folder picker.
+- No visual UI test was run for this build; only the build, hash/asInvoker
+  verification and static checks were performed.
+
 ## 0.0.11 - rename-before-write, fixed staging and no leftover test popups
 
 - Downloaded `REPENTOGON.zip` is staged in the single fixed folder

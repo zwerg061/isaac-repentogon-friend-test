@@ -42,11 +42,7 @@ function Write-InstallLog([string]$Text) {
 $script:StatePath = Join-Path $env:LOCALAPPDATA 'IsaacModSync\permanent-patch.json'
 # Fixed staging root: antivirus users only need one exclusion instead of a new
 # random %TEMP% folder on every run.
-$script:StagingRoot = if ($env:ISAAC_MODSYNC_TEST_STAGING_ROOT) {
-    $env:ISAAC_MODSYNC_TEST_STAGING_ROOT
-} else {
-    Join-Path $env:LOCALAPPDATA 'IsaacModSync\staging'
-}
+$script:StagingRoot = Join-Path $env:LOCALAPPDATA 'IsaacModSync\staging'
 try { New-Item -ItemType Directory -Force -Path $script:StagingRoot | Out-Null } catch { }
 $script:UninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\IsaacModSyncFriendTest'
 $script:StartMenuFolder = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Isaac ModSync Friend Test'
@@ -187,9 +183,8 @@ function Get-NormalizedPath([string]$Path) {
 
 function Find-IsaacRoot {
     param([string]$Override)
-    if (-not $Override -and $env:ISAAC_MODSYNC_TEST_ISAAC_ROOT) {
-        $Override = $env:ISAAC_MODSYNC_TEST_ISAAC_ROOT
-    }
+    # No environment overrides: only an explicitly passed -IsaacRoot or real
+    # Steam detection may decide the game path.
     if ($Override) {
         $candidate = Get-NormalizedPath $Override
         if (Test-Path -LiteralPath (Join-Path $candidate 'isaac-ng.exe') -PathType Leaf) { return $candidate }

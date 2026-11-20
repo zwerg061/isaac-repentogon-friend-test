@@ -2,6 +2,8 @@
 // It installs local tools, documentation and the verified PATCHED
 // zhlREPENTOGON.dll artifact into its own tool folder. It never writes into the
 // game directory, and ships no game EXE, mods, saves or Steam credentials.
+// v0.0.12: removed hidden test-path overrides from FindIsaacRoot so shipping
+// builds always use the real Steam installation (or the folder picker).
 // v0.0.11: the patch script renames existing DLLs aside before writing so an
 // antivirus lock cannot cause an access denied. v0.0.10 added process stops,
 // ReadOnly clearing and retries. v0.0.9 added auto-install, real PowerShell error
@@ -258,13 +260,8 @@ static std::vector<std::wstring> SteamRoots() {
 }
 
 static std::wstring FindIsaacRoot() {
-    // Hidden automation hook: lets fixture tests drive the real GUI without
-    // touching the user's Steam installation.
-    wchar_t overridePath[MAX_PATH] = L"";
-    if (GetEnvironmentVariableW(L"ISAAC_MODSYNC_TEST_ISAAC_ROOT", overridePath, MAX_PATH) > 0 &&
-        Exists(Join(overridePath, L"isaac-ng.exe"))) {
-        return overridePath;
-    }
+    // Always use the real Steam installation. Test overrides were removed:
+    // they could leak a fixture path into the shipping setup.
     static const wchar_t* const kNames[] = {
         L"The Binding of Isaac Rebirth", L"The Binding of Isaac Afterbirth+",
         L"The Binding of Isaac Repentance", L"The Binding of Isaac Repentance+"
@@ -327,7 +324,7 @@ static bool RegisterUninstallEntry(const std::wstring& setupPath) {
     const std::wstring uninstallCommand = quoted + L" --uninstall";
     bool ok = true;
     ok = SetUninstallValue(key, L"DisplayName", L"Isaac ModSync Friend Test") && ok;
-    ok = SetUninstallValue(key, L"DisplayVersion", L"0.0.11") && ok;
+    ok = SetUninstallValue(key, L"DisplayVersion", L"0.0.12") && ok;
     ok = SetUninstallValue(key, L"UninstallString", uninstallCommand) && ok;
     ok = SetUninstallValue(key, L"QuietUninstallString", uninstallCommand) && ok;
     ok = SetUninstallValue(key, L"DisplayIcon", setupPath) && ok;
@@ -628,7 +625,7 @@ static LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPA
             OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
             DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
 
-        HWND header = CreateWindowExW(0, L"STATIC", L"Isaac Repentogon Freund-Test \u2013 Setup v0.0.11",
+        HWND header = CreateWindowExW(0, L"STATIC", L"Isaac Repentogon Freund-Test \u2013 Setup v0.0.12",
             WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, window, (HMENU)1101, g_instance, nullptr);
         HWND warning = CreateWindowExW(0, L"STATIC",
             L"Installiert nur Patch.exe, lokale Mod-Werkzeuge und eine Anleitung.\n"
@@ -725,7 +722,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     RECT rect{ 0, 0, 680, 430 };
     AdjustWindowRect(&rect, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, FALSE);
     HWND window = CreateWindowExW(0, cls.lpszClassName,
-        L"Isaac Repentogon Freund-Test Setup v0.0.11 (experimentell)",
+        L"Isaac Repentogon Freund-Test Setup v0.0.12 (experimentell)",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
         CW_USEDEFAULT, CW_USEDEFAULT, rect.right - rect.left, rect.bottom - rect.top,
         nullptr, nullptr, instance, nullptr);
