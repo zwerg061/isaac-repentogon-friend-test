@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.0.17 - in-game progress bar and production hot reload
+
+- `zhlREPENTOGON.dll` now renders a ModSync progress bar directly in the
+  `Menu_Online::Render` overlay (right lobby area): status, ASCII bar, percent
+  and current mod name. Reads `%LOCALAPPDATA%\IsaacModSync\lobby_progress.json`
+  atomically written by the watcher; stays visible 4 s after 100%.
+- Replaced the sandbox-only reload logic in `ModReloading.cpp` with a production
+  trigger: `%LOCALAPPDATA%\IsaacModSync\reload_trigger.json` is polled from
+  `MenuManager::Update`, consumed, and `ModManager::Reset()` runs in the live
+  lobby (menu 17) - no restart, no hardcoded sandbox path, no fixture mod.
+  The DLL writes 100% / "Mods aktiv!" to `lobby_progress.json` on completion.
+- Watcher writes progress at every step (profile, x/y Workshop mods with
+  percent, staging, hot reload) and sends the reload trigger after staging.
+
 ## 0.0.16 - automatic lobby sync on permanent patch start
 
 - New embedded `Start-ModSyncLobbySync.ps1` is launched hidden after the game

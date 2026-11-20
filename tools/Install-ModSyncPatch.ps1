@@ -584,43 +584,51 @@ function Invoke-Apply {
     $dll = Get-RepentogonDllPath $root
     if (-not $dll) { throw 'zhlREPENTOGON.dll fehlt nach der REPENTOGON-Installation.' }
     $dllFolder = Split-Path -Parent $dll
-    # The launcher validates that zhlLoader, libzhl and zhlREPENTOGON come from
-    # the SAME build. Replace all three with the matching sandbox trio.
+    # The launcher copies <root>\zhlREPENTOGON.dll into <root>\Repentogon on
+    # every start. Both locations must therefore carry the same patched trio.
+    $folders = @($root)
+    $repentogonFolder = Join-Path $root 'Repentogon'
+    if ((Test-Path -LiteralPath $repentogonFolder -PathType Container) -and
+        ($folders -notcontains $repentogonFolder)) { $folders += $repentogonFolder }
     $trio = @('zhlREPENTOGON.dll', 'zhlLoader.dll', 'libzhl.dll')
     $patchedFiles = @()
-    foreach ($name in $trio) {
-        $target = Join-Path $dllFolder $name
-        if (-not (Test-Path -LiteralPath $target -PathType Leaf)) { throw "REPENTOGON-Datei fehlt: $target" }
-        $source = if ($name -eq 'zhlREPENTOGON.dll') { $patched } else { Join-Path $ToolsRoot $name }
-        if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Passende REPENTOGON-Datei fehlt: $source" }
-        $sourceHash = Get-Sha256 $source
-        $backup = "$target.orig"
-        if (-not (Test-Path -LiteralPath $backup -PathType Leaf)) {
-            $current = Get-Sha256 $target
-            Copy-FileWithRetry $target $backup
-            if ((Get-Sha256 $backup) -ne $current) { throw "Sicherung von $name fehlgeschlagen (Hash-Mismatch)." }
-            Write-Log "Original gesichert: $backup"
+    foreach ($folder in $folders) {
+        foreach ($name in $trio) {
+            $target = Join-Path $folder $name
+            if (-not (Test-Path -LiteralPath $target -PathType Leaf)) { continue }
+            $source = if ($name -eq 'zhlREPENTOGON.dll') { $patched } else { Join-Path $ToolsRoot $name }
+            if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Passende REPENTOGON-Datei fehlt: $source" }
+            $sourceHash = Get-Sha256 $source
+            $backup = "$target.orig"
+            if (-not (Test-Path -LiteralPath $backup -PathType Leaf)) {
+                $current = Get-Sha256 $target
+                Copy-FileWithRetry $target $backup
+                if ((Get-Sha256 $backup) -ne $current) { throw "Sicherung von $name fehlgeschlagen (Hash-Mismatch)." }
+                Write-Log "Original gesichert: $backup"
+            }
+            $originalHash = Get-Sha256 $backup
+            if ((Get-Sha256 $target) -ne $sourceHash) {
+                Copy-FileWithRetry $source $target
+                if ((Get-Sha256 $target) -ne $sourceHash) { throw "Kopie von $name konnte nicht verifiziert werden." }
+            }
+            $attributes = [IO.File]::GetAttributes($target)
+            if (($attributes -band [IO.FileAttributes]::ReadOnly) -eq 0) {
+                [IO.File]::SetAttributes($target, ($attributes -bor [IO.FileAttributes]::ReadOnly))
+            }
+            $patchedFiles += [ordered]@{
+                name = ((Split-Path -Leaf $folder) + '/' + $name)
+                target = $target
+                backup = $backup
+                original_sha256 = $originalHash
+                patched_sha256 = $sourceHash
+            }
+            Write-Log "REPENTOGON-Datei aktiviert: $target ($sourceHash)"
         }
-        $originalHash = Get-Sha256 $backup
-        if ((Get-Sha256 $target) -ne $sourceHash) {
-            Copy-FileWithRetry $source $target
-            if ((Get-Sha256 $target) -ne $sourceHash) { throw "Kopie von $name konnte nicht verifiziert werden." }
-        }
-        $attributes = [IO.File]::GetAttributes($target)
-        if (($attributes -band [IO.FileAttributes]::ReadOnly) -eq 0) {
-            [IO.File]::SetAttributes($target, ($attributes -bor [IO.FileAttributes]::ReadOnly))
-        }
-        $patchedFiles += [ordered]@{
-            name = $name
-            target = $target
-            backup = $backup
-            original_sha256 = $originalHash
-            patched_sha256 = $sourceHash
-        }
-        Write-Log "REPENTOGON-Datei aktiviert: $name ($sourceHash)"
     }
-    $backup = ($patchedFiles | Where-Object { $_.name -eq 'zhlREPENTOGON.dll' } | Select-Object -First 1).backup
-    $originalHash = ($patchedFiles | Where-Object { $_.name -eq 'zhlREPENTOGON.dll' } | Select-Object -First 1).original_sha256
+    $mainEntry = $patchedFiles | Where-Object { $_.target -like '*Repentogon\zhlREPENTOGON.dll' } | Select-Object -First 1
+    if (-not $mainEntry) { $mainEntry = $patchedFiles | Where-Object { $_.name -like '*zhlREPENTOGON.dll' } | Select-Object -First 1 }
+    $backup = $mainEntry.backup
+    $originalHash = $mainEntry.original_sha256
     $state = [ordered]@{
         schema_version = 1
         applied = $true
@@ -649,7 +657,7 @@ function Invoke-Apply {
         try {
             Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass',
                 '-File', "`"$watcher`"", '-ToolsRoot', "`"$ToolsRoot`"", '-IsaacRoot', "`"$root`"",
-                '-GamePid', "$gamePid", '-Version', '0.0.16') -WindowStyle Hidden -ErrorAction Stop | Out-Null
+                '-GamePid', "$gamePid", '-Version', '0.0.17') -WindowStyle Hidden -ErrorAction Stop | Out-Null
             Write-Log 'Auto-Lobby-Sync-Watcher gestartet.'
         } catch { Write-Log "Auto-Lobby-Sync-Watcher nicht gestartet: $($_.Exception.Message)" }
     } else {

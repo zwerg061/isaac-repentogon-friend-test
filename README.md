@@ -1,6 +1,6 @@
-# Isaac REPENTOGON Friend Test
+﻿# Isaac REPENTOGON Friend Test
 
-**Version:** 0.0.16 (experimental)<br>
+**Version:** 0.0.17 (experimental)<br>
 **Status:** menu fix and patched REPENTOGON DLL verified in a sandbox; connection
 not yet verified with a second player.
 
@@ -17,7 +17,7 @@ not yet verified with a second player.
 > exit, `-RestoreOnly`, rollback and crash recovery. REPENTOGON must already be
 > installed; without the switch nothing in the game directory is changed.
 
-> **Closed friend test v0.0.6 — automatic transfer enabled.** A two-sided version
+> **Closed friend test v0.0.6 â€” automatic transfer enabled.** A two-sided version
 > check gates `-HostMode` and `-WaitForHostProfile`: both players must use v0.0.6
 > (runner, companion file version and profile `tool_version`), otherwise the
 > runner aborts before contacting Steam, sending a profile, downloading mods or
@@ -52,7 +52,7 @@ distribute the game, REPENTOGON, mods, Workshop files, saves, or Steam credentia
 `Patch.exe` does not swap any file. It patches the installed files in place and
 can undo everything:
 
-- `Repentogon\isaac-ng.exe` — engine co-op/mod-ban patch.
+- `Repentogon\isaac-ng.exe` â€” engine co-op/mod-ban patch.
 - `Repentogon\zhlREPENTOGON.dll` (REPENTOGON 1.1.3), three byte patches:
   1. the menu reset filter only resets "Daily Run", not the ONLINE menu,
   2. the forced online selection (`ASMPatchOnlineSelection`) is skipped,
@@ -68,24 +68,24 @@ to `Patch.exe`.
 
 The single-file `Isaac-Freund-Test-Setup.exe` release asset embeds:
 
-- `Patch.exe` — GUI with **Prüfen**, **Patch anwenden**, and **Zurücksetzen**.
-- `modsync.py` — manifest/profile tools. The session command copies only
+- `Patch.exe` â€” GUI with **PrÃ¼fen**, **Patch anwenden**, and **ZurÃ¼cksetzen**.
+- `modsync.py` â€” manifest/profile tools. The session command copies only
   hash-verified host mods into a fresh `%TEMP%` staging folder, plus the same
   temporary lobby-exit observer on both players; it can call SteamCMD anonymously
   for Workshop IDs from the trusted host profile.
-- `Run-TempModProfile.ps1` — temporarily redirects Isaac's fixed `mods` path to
+- `Run-TempModProfile.ps1` â€” temporarily redirects Isaac's fixed `mods` path to
   that staging folder and restores the original folder when Isaac exits. An
   experimental log-based notice reports leaving the lobby *menu*, not verified
   Steam-lobby closure. Isaac is not closed automatically.
-- `SteamModProfileBridge.exe` — version-checked host/client companion for
+- `SteamModProfileBridge.exe` â€” version-checked host/client companion for
   a future Steam P2P profile transfer.
   `steam_appid.txt` contains only Isaac's public AppID; Steam's API DLL is loaded
   from the player's own game installation, not included in the setup.
-- `setup-freundestest-de.txt` — German preparation and test instructions.
+- `setup-freundestest-de.txt` â€” German preparation and test instructions.
 
 The installer asks for a destination folder and refuses to overwrite existing
 files. Keep the patch manager in place so the same backup is available for
-**Zurücksetzen**. Neither EXE requests administrator rights, so Windows shows no
+**ZurÃ¼cksetzen**. Neither EXE requests administrator rights, so Windows shows no
 UAC prompt; the game folder must be writable by the current user.
 
 ## Requirements for both players

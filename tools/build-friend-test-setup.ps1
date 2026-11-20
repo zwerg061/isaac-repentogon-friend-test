@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Builds a single-file setup EXE containing only Patch.exe and the friend-test guide.
 #>
@@ -23,9 +23,9 @@ $sessionSource = Join-Path $PSScriptRoot 'Run-TempModProfile.ps1'
 $resyncSource = Join-Path $PSScriptRoot 'Resync-ProfileAndSaveData.ps1'
 $bridgeSource = Join-Path $repo 'tool\SteamModProfileBridge.cpp'
 $versionSource = Join-Path $repo 'VERSION'
-$patchedDllSource = Join-Path $repo 'artifacts-v0.0.16\zhlREPENTOGON.dll'
-$loaderSource = Join-Path $repo 'artifacts-v0.0.16\zhlLoader.dll'
-$libZhlSource = Join-Path $repo 'artifacts-v0.0.16\libzhl.dll'
+$patchedDllSource = Join-Path $repo 'artifacts-v0.0.17\zhlREPENTOGON.dll'
+$loaderSource = Join-Path $repo 'artifacts-v0.0.17\zhlLoader.dll'
+$libZhlSource = Join-Path $repo 'artifacts-v0.0.17\libzhl.dll'
 $installScriptSource = Join-Path $PSScriptRoot 'Install-ModSyncPatch.ps1'
 $lobbyWatcherSource = Join-Path $PSScriptRoot 'Start-ModSyncLobbySync.ps1'
 

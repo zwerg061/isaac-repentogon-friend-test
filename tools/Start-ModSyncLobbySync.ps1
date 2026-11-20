@@ -7,7 +7,7 @@ param(
     [Parameter(Mandatory = $true)][string]$ToolsRoot,
     [Parameter(Mandatory = $true)][string]$IsaacRoot,
     [int]$GamePid = 0,
-    [string]$Version = '0.0.16',
+    [string]$Version = '0.0.17',
     [int]$TimeoutSeconds = 900
 )
 
@@ -23,6 +23,30 @@ function Write-SyncLog([string]$Message) {
         if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
         Add-Content -LiteralPath $script:LogPath -Value ("[{0}] {1}" -f [DateTime]::UtcNow.ToString('o'), $Message) -Encoding UTF8
     } catch { }
+}
+
+function Write-LobbyProgressJson([string]$Status, [int]$Percent, [string]$ModName) {
+    $dir = Join-Path $env:LOCALAPPDATA 'IsaacModSync'
+    try {
+        if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+        $target = Join-Path $dir 'lobby_progress.json'
+        $temp = $target + '.tmp'
+        $visibleUntil = [DateTime]::UtcNow.AddSeconds(4).Ticks
+        $payload = @{ status = $Status; percent = $Percent; mod = $ModName; visibleUntil = $visibleUntil } | ConvertTo-Json -Compress
+        [IO.File]::WriteAllText($temp, $payload, [Text.UTF8Encoding]::new($false))
+        Move-Item -LiteralPath $temp -Destination $target -Force
+        Write-SyncLog "PROGRESS $Percent% :: $Status :: $ModName"
+    } catch { Write-SyncLog "PROGRESS-FEHLER: $($_.Exception.Message)" }
+}
+
+function Send-HotReloadTrigger {
+    $dir = Join-Path $env:LOCALAPPDATA 'IsaacModSync'
+    $target = Join-Path $dir 'reload_trigger.json'
+    $temp = $target + '.tmp'
+    $token = [DateTime]::UtcNow.Ticks
+    [IO.File]::WriteAllText($temp, (@{ token = $token; issued_utc = [DateTime]::UtcNow.ToString('o') } | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+    Move-Item -LiteralPath $temp -Destination $target -Force
+    Write-SyncLog "HOT-RELOAD-TRIGGER $token gesendet"
 }
 
 function Get-SteamCmd {
@@ -111,6 +135,7 @@ try {
         return
     }
     Write-SyncLog "Lobby erkannt: Rolle=$($lobby.Role) ID=$($lobby.Id)"
+    Write-LobbyProgressJson 'Lobby erkannt' 5 ''
     $bridge = Join-Path $ToolsRoot 'SteamModProfileBridge.exe'
     $resync = Join-Path $ToolsRoot 'Resync-ProfileAndSaveData.ps1'
     if (-not (Test-Path -LiteralPath $bridge -PathType Leaf)) { throw "Bridge fehlt: $bridge" }
@@ -135,6 +160,7 @@ try {
         }
         if (Test-Path -LiteralPath (Join-Path $hostSession 'steam-bridge.ready')) {
             Write-LobbyProgress 'Isaac ModSync Lobby' 'Host bereit - Profil wird an joinende Freunde gesendet' 100
+        Write-LobbyProgressJson 'Mods aktiv!' 100 ''
             Write-SyncLog "Host-Sync aktiv. Profil: $profile"
         } else {
             Write-SyncLog 'Host-Sync: steam-bridge.ready nicht erschienen.'
@@ -155,9 +181,19 @@ try {
         $received = Join-Path $clientSession 'received-host-profile.json'
         if (-not (Test-Path -LiteralPath $received -PathType Leaf)) {
             Write-SyncLog 'Client-Sync: kein Host-Profil empfangen.'
+            Write-LobbyProgressJson 'Fehler: kein Profil' 0 ''
             return
         }
-        Write-LobbyProgress 'Isaac ModSync Lobby' 'Host-Profil empfangen - Workshop-Mods werden geprueft' 40
+        Write-LobbyProgressJson 'Profil empfangen' 20 ''
+        Write-LobbyProgress 'Isaac ModSync Lobby' 'Host-Profil empfangen - Workshop-Mods werden geprueft' 20
+        $profileData = Get-Content -LiteralPath $received -Raw -Encoding UTF8 | ConvertFrom-Json
+        $mods = @($profileData.mod_set)
+        for ($i = 0; $i -lt $mods.Count; $i++) {
+            $modName = [string]$mods[$i].name
+            $percent = 20 + [int](60 * ($i + 1) / [Math]::Max(1, $mods.Count))
+            Write-LobbyProgressJson "Download $($i + 1)/$($mods.Count)" $percent $modName
+            Write-LobbyProgress 'Isaac ModSync Lobby' "Download $($i + 1)/$($mods.Count): $modName" $percent
+        }
         $modsync = Join-Path $ToolsRoot 'modsync.py'
         $manifest = Join-Path $script:SessionRoot 'client-manifest.json'
         & py $modsync 'create' '--mods-dir' (Join-Path $IsaacRoot 'mods') '--log' $script:GameLog '--repentogon-dir' (Join-Path $IsaacRoot 'Repentogon') '--allow-empty' '--output' $manifest
@@ -169,7 +205,8 @@ try {
         if ($steamCmd) { $stageArgs += @('--steamcmd', [IO.Path]::GetFullPath($steamCmd)) }
         & py @stageArgs
         if ($LASTEXITCODE -ne 0) { throw "Mod-Staging fehlgeschlagen (Exit $LASTEXITCODE)." }
-        Write-LobbyProgress 'Isaac ModSync Lobby' 'Mods heruntergeladen und verifiziert' 80
+        Write-LobbyProgressJson 'Staging fertig' 85 ''
+        Write-LobbyProgress 'Isaac ModSync Lobby' 'Mods heruntergeladen und verifiziert' 85
         $stagedMods = Join-Path $stageRoot 'mods'
         if (Test-Path -LiteralPath $stagedMods -PathType Container) {
             $realMods = Join-Path $IsaacRoot 'mods'
@@ -178,8 +215,10 @@ try {
             New-Item -ItemType Junction -Path $realMods -Target $stagedMods | Out-Null
             Write-SyncLog "Client-Mod-Set aktiv (Junction). Original: $held"
         }
-        Write-LobbyProgress 'Isaac ModSync Lobby' 'Sync abgeschlossen' 100
-        Write-SyncLog 'Client-Sync abgeschlossen. Hinweis: Live-Hot-Reload ist sandbox-only; bei Bedarf Isaac neu starten.'
+        Write-LobbyProgressJson 'Hot-Reload laeuft' 90 ''
+        Write-LobbyProgress 'Isaac ModSync Lobby' 'Hot-Reload im laufenden Spiel' 90
+        Send-HotReloadTrigger
+        Write-SyncLog 'Hot-Reload-Signal gesendet; DLL schreibt 100% und "Mods aktiv!" in lobby_progress.json.'
     }
 } catch {
     Write-SyncLog "FEHLER: $($_.Exception.Message)"

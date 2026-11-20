@@ -33,3 +33,4 @@ steam_appid.txt
 *.vdf
 __pycache__/
 *.py[cod]
+artifacts-v0.0.17/

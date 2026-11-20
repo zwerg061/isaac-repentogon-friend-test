@@ -1,5 +1,5 @@
-ISAAC REPENTOGON – FREUND-TEST (EXPERIMENTELL)
-Version 0.0.16 (experimentell)
+﻿ISAAC REPENTOGON â€“ FREUND-TEST (EXPERIMENTELL)
+Version 0.0.17 (experimentell)
 ================================================
 
 WICHTIG: FREIGABE NUR FUER DEN GESCHLOSSENEN FREUNDESTEST.
@@ -36,62 +36,62 @@ Zweck
 -----
 Der Setup-EXE installiert `Patch.exe`, `modsync.py`, den Runner, den
 Steam-P2P-Companion, diese Anleitung und die gepatchte `zhlREPENTOGON.dll`
-ausschließlich in den gewählten Werkzeugordner. Er installiert nichts direkt
-in das Spielverzeichnis und enthält keine Spiel-EXE, keine Mods, keine
-Spielstände, keine Steam-Anmeldedaten oder Tokens. Jeder Spieler braucht eine
+ausschlieÃŸlich in den gewÃ¤hlten Werkzeugordner. Er installiert nichts direkt
+in das Spielverzeichnis und enthÃ¤lt keine Spiel-EXE, keine Mods, keine
+SpielstÃ¤nde, keine Steam-Anmeldedaten oder Tokens. Jeder Spieler braucht eine
 eigene, legitime Steam-Installation sowie ein installiertes REPENTOGON.
 
 Was `Patch.exe` macht
 ---------------------
 `Patch.exe` tauscht keine Dateien aus. Es patcht die bereits installierten
-Dateien direkt und kann alles wieder zurücksetzen:
+Dateien direkt und kann alles wieder zurÃ¼cksetzen:
 
 - `Repentogon\isaac-ng.exe`: Coop-/Mod-Bann-Patch der Engine.
 - `Repentogon\zhlREPENTOGON.dll` (REPENTOGON 1.1.3), drei Byte-Patches:
-  a) der Menü-Filter setzt nur noch "Daily Run" zurück, nicht mehr das
-     ONLINE-Menü,
-  b) die erzwungene Online-Auswahl (Quick Match/Daily Run) wird übersprungen,
+  a) der MenÃ¼-Filter setzt nur noch "Daily Run" zurÃ¼ck, nicht mehr das
+     ONLINE-MenÃ¼,
+  b) die erzwungene Online-Auswahl (Quick Match/Daily Run) wird Ã¼bersprungen,
   c) der Mod-Bann-Status wird 0 statt 3.
 
-Vor jedem Schreiben prüft `Patch.exe` die exakte Dateiversion (SHA-256). Passt
-etwas nicht, wird nichts verändert. Vor dem ersten Patch legt das Tool im
-Ordner `backup` neben `Patch.exe` Sicherungen an. "Zurücksetzen" stellt diese
-Sicherungen wieder her. Den Setup-Ordner deshalb nicht löschen, solange der
+Vor jedem Schreiben prÃ¼ft `Patch.exe` die exakte Dateiversion (SHA-256). Passt
+etwas nicht, wird nichts verÃ¤ndert. Vor dem ersten Patch legt das Tool im
+Ordner `backup` neben `Patch.exe` Sicherungen an. "ZurÃ¼cksetzen" stellt diese
+Sicherungen wieder her. Den Setup-Ordner deshalb nicht lÃ¶schen, solange der
 Patch aktiv ist.
 
 Ehrlicher Status
 ----------------
-- Im isolierten Sandbox-Test bleibt das ONLINE-Menü mit diesem Patch offen;
-  Quick Match, Public Match und Friend Match sind sichtbar und anwählbar.
-- Eine echte Verbindung zu einem zweiten Spieler wurde noch nicht bestätigt.
-  Friend Match, privates Lobby-Erstellen und Mod-Synchronität sind offen.
+- Im isolierten Sandbox-Test bleibt das ONLINE-MenÃ¼ mit diesem Patch offen;
+  Quick Match, Public Match und Friend Match sind sichtbar und anwÃ¤hlbar.
+- Eine echte Verbindung zu einem zweiten Spieler wurde noch nicht bestÃ¤tigt.
+  Friend Match, privates Lobby-Erstellen und Mod-SynchronitÃ¤t sind offen.
 - Ein Online-Unlock entfernt nur lokale Sperren; er beweist nicht, dass die
   Netzwerkverbindung oder Mods synchron funktionieren.
-- Der dokumentierte REPENTOGON-Befehl `netstart <SteamID64>` ist ein möglicher,
-  aber hier noch unbestätigter Verbindungsweg. Er kann den angegebenen Freund
-  verbinden/einladen. Nur ausführen, wenn beide Spieler gleichzeitig bereit sind.
+- Der dokumentierte REPENTOGON-Befehl `netstart <SteamID64>` ist ein mÃ¶glicher,
+  aber hier noch unbestÃ¤tigter Verbindungsweg. Er kann den angegebenen Freund
+  verbinden/einladen. Nur ausfÃ¼hren, wenn beide Spieler gleichzeitig bereit sind.
 - Der normale Steam-Einladungs-/Join-Pfad ist in diesem REPENTOGON-Build laut
-  Projektbefund nicht funktionsfähig. Also nicht darauf als Testvoraussetzung
+  Projektbefund nicht funktionsfÃ¤hig. Also nicht darauf als Testvoraussetzung
   verlassen.
 
 Voraussetzungen bei BEIDEN Spielern
 -----------------------------------
 1. The Binding of Isaac: Repentance+ mit identischem Spiel-Build:
    v1.9.7.12.J273.
-2. REPENTOGON 1.1.3 (unverändert installiert) und derselbe Patch-Stand
+2. REPENTOGON 1.1.3 (unverÃ¤ndert installiert) und derselbe Patch-Stand
    (Version 0.0.6).
-3. Identische Mods, Mod-Versionen UND Ladereihenfolge. Nicht benötigte Mods
-   zunächst deaktivieren; Mods mit Zufall, Gegnern, Items oder Stats können
+3. Identische Mods, Mod-Versionen UND Ladereihenfolge. Nicht benÃ¶tigte Mods
+   zunÃ¤chst deaktivieren; Mods mit Zufall, Gegnern, Items oder Stats kÃ¶nnen
    Desyncs verursachen.
-4. Beide Spieler stimmen dem experimentellen Patch und dem Test ausdrücklich zu.
+4. Beide Spieler stimmen dem experimentellen Patch und dem Test ausdrÃ¼cklich zu.
 
 Vor dem Start
 -------------
-1. Jeder Spieler installiert/aktualisiert Spiel und REPENTOGON selbst über
-   vertrauenswürdige Quellen. Keine EXE/DLL oder Steam-Dateien gegenseitig
+1. Jeder Spieler installiert/aktualisiert Spiel und REPENTOGON selbst Ã¼ber
+   vertrauenswÃ¼rdige Quellen. Keine EXE/DLL oder Steam-Dateien gegenseitig
    verschicken.
-2. Im Setup-Ordner `Patch.exe` starten, Installation prüfen lassen und
-   "Patch anwenden" wählen. Danach steht dort "Online-Menü-Fix aktiv".
+2. Im Setup-Ordner `Patch.exe` starten, Installation prÃ¼fen lassen und
+   "Patch anwenden" wÃ¤hlen. Danach steht dort "Online-MenÃ¼-Fix aktiv".
 3. Ablauf (v0.0.6-Protokoll aktiv): Beide Spieler brauchen Python 3 und Setup
    **v0.0.7**. Das Protokoll bleibt bei 0.0.6, damit beide Seiten kompatibel sind.
    Es wird keine `host-profile.json` und kein Mod-Archiv manuell verschickt. Der
@@ -123,7 +123,7 @@ Vor dem Start
    IDs laedt SteamCMD ausschliesslich mit `+login anonymous` herunter.
    SteamCMD wird nicht mitgeliefert; Steam kann die Workshop-Originale im Cache
    behalten. Steam-Zugangsdaten und Token-Dateien werden nicht gelesen oder
-   gespeichert. Der Versions-Check läuft automatisch; `-SandboxOptIn` wird nicht
+   gespeichert. Der Versions-Check lÃ¤uft automatisch; `-SandboxOptIn` wird nicht
    mehr benoetigt (der Schalter bleibt aus Kompatibilitaetsgruenden wirkungslos
    erhalten).
 
@@ -199,28 +199,28 @@ Verbindungstest
 4. Der experimentelle `netstart <SteamID64-des-Freundes>`-Weg ist alternativ,
    aber hier nicht bestaetigt. SteamID64 ist die 17-stellige Account-ID, kein
    Passwort und kein Token.
-5. Erfolg erst notieren, wenn der Freund tatsächlich verbunden ist und beide
-    denselben Run sehen. Ein geöffnetes Menü oder eine Lobby-Form allein ist
+5. Erfolg erst notieren, wenn der Freund tatsÃ¤chlich verbunden ist und beide
+    denselben Run sehen. Ein geÃ¶ffnetes MenÃ¼ oder eine Lobby-Form allein ist
     kein Verbindungsnachweis.
 6. Bei Absturz, Versionsabweichung oder Desync abbrechen. Keine fremden Lobbys
    betreten und keine unbekannten Mods installieren. Nach dem Lobby-Test Isaac
-   beim Client schließen, damit der Temp-Runner die Original-Mods zurücksetzt.
+   beim Client schlieÃŸen, damit der Temp-Runner die Original-Mods zurÃ¼cksetzt.
 
-Zurücksetzen
+ZurÃ¼cksetzen
 ------------
-`Patch.exe` starten und "Zurücksetzen" wählen. Das Tool stellt die Dateien aus
-dem `backup`-Ordner wieder her. Alternativ Spiel/REPENTOGON über Steam
-reparieren bzw. REPENTOGON neu installieren. Vorher das Spiel schließen.
+`Patch.exe` starten und "ZurÃ¼cksetzen" wÃ¤hlen. Das Tool stellt die Dateien aus
+dem `backup`-Ordner wieder her. Alternativ Spiel/REPENTOGON Ã¼ber Steam
+reparieren bzw. REPENTOGON neu installieren. Vorher das Spiel schlieÃŸen.
 
 Erwartung
 ---------
-Es kann grundsätzlich funktionieren, ist mit dieser REPENTOGON-Konfiguration
+Es kann grundsÃ¤tzlich funktionieren, ist mit dieser REPENTOGON-Konfiguration
 aber noch nicht bewiesen. Insbesondere Friend Match, privates Lobby-Erstellen
-und Mod-Synchronität sind offen. Ein Test mit zwei echten Steam-Spielern ist
-nötig, um das zu klären.
+und Mod-SynchronitÃ¤t sind offen. Ein Test mit zwei echten Steam-Spielern ist
+nÃ¶tig, um das zu klÃ¤ren.
 
-Referenzstände aus dem bisherigen Sandbox-Test:
+ReferenzstÃ¤nde aus dem bisherigen Sandbox-Test:
 - Spiel: v1.9.7.12.J273
 - REPENTOGON: 1.1.3
-- ONLINE-Menü mit Patch: offen und Friend Match anwählbar (Sandbox bestätigt)
-- Verbindungsstatus: nicht bestätigt
+- ONLINE-MenÃ¼ mit Patch: offen und Friend Match anwÃ¤hlbar (Sandbox bestÃ¤tigt)
+- Verbindungsstatus: nicht bestÃ¤tigt
