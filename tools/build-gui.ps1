@@ -9,17 +9,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$vswhere = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
-$vsInstall = $null
-if (Test-Path -LiteralPath $vswhere) {
-    $vsInstall = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null |
-        Select-Object -First 1
-}
-if ([string]::IsNullOrWhiteSpace($vsInstall)) {
-    $vsInstall = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools'
-}
-$vcvars = Join-Path $vsInstall 'VC\Auxiliary\Build\vcvars32.bat'
-if (-not (Test-Path $vcvars)) { throw "vcvars32.bat nicht gefunden: $vcvars" }
+. (Join-Path $PSScriptRoot 'find-vcvars.ps1')
+$vcvars = Find-VcVars32
+if ([string]::IsNullOrWhiteSpace($vcvars)) { throw 'vcvars32.bat nicht gefunden (Visual Studio C++-Toolchain fehlt).' }
 if (-not (Test-Path $Src))    { throw "Quelle nicht gefunden: $Src" }
 
 New-Item -ItemType Directory -Force -Path $Out | Out-Null

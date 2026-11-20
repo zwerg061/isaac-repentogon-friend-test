@@ -11,12 +11,14 @@ $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
 $stage = Join-Path $OutDir 'payload'
 $setupExe = Join-Path $OutDir 'Isaac-Freund-Test-Setup.exe'
-$vcvars = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars32.bat'
+. (Join-Path $PSScriptRoot 'find-vcvars.ps1')
+$vcvars = Find-VcVars32
 $patcherSource = Join-Path $repo 'tool\RgonOnlineUnlock.cpp'
 $installerSource = Join-Path $repo 'tool\FriendTestSetup.cpp'
 $guideSource = Join-Path $repo 'setup-freundestest-de.txt'
 $modsyncSource = Join-Path $repo 'tools\modsync.py'
 
+if ([string]::IsNullOrWhiteSpace($vcvars)) { throw 'vcvars32.bat nicht gefunden (Visual Studio C++-Toolchain fehlt).' }
 if (-not (Test-Path -LiteralPath $vcvars)) { throw "vcvars32.bat nicht gefunden: $vcvars" }
 if (-not (Test-Path -LiteralPath $patcherSource)) { throw "Patch-Quelle fehlt: $patcherSource" }
 if (-not (Test-Path -LiteralPath $installerSource)) { throw "Setup-Quelle fehlt: $installerSource" }
