@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.0.16 - automatic lobby sync on permanent patch start
+
+- New embedded `Start-ModSyncLobbySync.ps1` is launched hidden after the game
+  starts. It waits for `Successfully created/joined lobby` in the game log and
+  starts the Steam P2P companion in the correct mode:
+  - host: uses the active `isaac-mod-launcher` modpack profile (or generates one
+    from the live log) and sends it to joining friends;
+  - client: receives the host profile, stages/downloads missing Workshop mods
+    via `modsync.py`/SteamCMD with native `Write-Progress` output and activates
+    the staged mod set.
+- The previous inspect-only companion is now a fallback.
+- Known limit: the live hot-reload probe in the DLL is sandbox-only; for a real
+  install a game restart may be needed after a client mod set change.
+
 ## 0.0.16 - Steam lobby joins are forwarded again
 
 - Removed the upstream `Menu_Game::UnknownJoinLobby` no-op hook from the patched

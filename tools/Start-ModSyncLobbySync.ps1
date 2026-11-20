@@ -1,0 +1,188 @@
+<#
+.SYNOPSIS
+    Background watcher for the permanent patch: starts the Steam P2P companion
+    in full auto lobby-sync mode as soon as the game creates or joins a lobby.
+#>
+param(
+    [Parameter(Mandatory = $true)][string]$ToolsRoot,
+    [Parameter(Mandatory = $true)][string]$IsaacRoot,
+    [int]$GamePid = 0,
+    [string]$Version = '0.0.16',
+    [int]$TimeoutSeconds = 900
+)
+
+$ErrorActionPreference = 'Stop'
+$script:LogPath = Join-Path $env:LOCALAPPDATA 'IsaacModSync\lobby-sync.log'
+$script:GameLog = Join-Path $env:USERPROFILE 'Documents\My Games\Binding of Isaac Repentance+\log.txt'
+$script:SessionRoot = Join-Path $env:LOCALAPPDATA ('IsaacModSync\staging\lobby-sync-' + [DateTime]::UtcNow.ToString('yyyyMMddHHmmssfff'))
+New-Item -ItemType Directory -Force -Path $script:SessionRoot | Out-Null
+
+function Write-SyncLog([string]$Message) {
+    try {
+        $dir = Split-Path -Parent $script:LogPath
+        if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+        Add-Content -LiteralPath $script:LogPath -Value ("[{0}] {1}" -f [DateTime]::UtcNow.ToString('o'), $Message) -Encoding UTF8
+    } catch { }
+}
+
+function Get-SteamCmd {
+    $cmd = Get-Command 'steamcmd.exe' -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+    foreach ($candidate in @('C:\steamcmd\steamcmd.exe', (Join-Path $env:ProgramFiles 'SteamCMD\steamcmd.exe'), (Join-Path $env:LOCALAPPDATA 'SteamCMD\steamcmd.exe'))) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate -PathType Leaf)) { return $candidate }
+    }
+    return $null
+}
+
+function Wait-Lobby {
+    # Start at EOF so an old lobby from a previous session is never reused.
+    $position = 0
+    if (Test-Path -LiteralPath $script:GameLog -PathType Leaf) { $position = (Get-Item -LiteralPath $script:GameLog).Length }
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        if (Test-Path -LiteralPath $script:GameLog -PathType Leaf) {
+            $stream = [IO.File]::Open($script:GameLog, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+            try {
+                if ($stream.Length -lt $position) { $position = 0 }
+                $stream.Position = $position
+                $reader = New-Object IO.StreamReader($stream)
+                $text = $reader.ReadToEnd()
+                $position = $stream.Position
+                $reader.Dispose()
+                foreach ($line in ($text -split "`n")) {
+                    if ($line -match 'Successfully created lobby\s+(\d+)') {
+                        return @{ Role = 'host'; Id = $Matches[1] }
+                    }
+                    if ($line -match 'Successfully joined lobby\s+(\d+)') {
+                        return @{ Role = 'client'; Id = $Matches[1] }
+                    }
+                }
+            } catch { Write-SyncLog "Log-LeseFehler: $($_.Exception.Message)" }
+            finally { $stream.Dispose() }
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    return $null
+}
+
+function Get-ActiveProfilePath {
+    # Requirement: when started via isaac-mod-launcher.exe with online sync,
+    # exactly the active modpack must become the host profile.
+    $settingsPath = Join-Path $env:APPDATA 'isaac-mod-launcher\settings.json'
+    if (Test-Path -LiteralPath $settingsPath -PathType Leaf) {
+        try {
+            $settings = Get-Content -LiteralPath $settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            $active = $settings.active_modpack_id
+            if ($active) {
+                $candidate = Join-Path $env:APPDATA ("isaac-mod-launcher\modpacks\$active\data\profile.json")
+                if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+                    $data = Get-Content -LiteralPath $candidate -Raw -Encoding UTF8 | ConvertFrom-Json
+                    if ($data.format -eq 'isaac-mod-profile' -and $data.mod_set) {
+                        Write-SyncLog "Host-Profil aus Launcher-Modpack '$active': $candidate"
+                        return $candidate
+                    }
+                }
+            }
+        } catch { Write-SyncLog "Launcher-Settings nicht lesbar: $($_.Exception.Message)" }
+    }
+    # Fallback: generate from the live game log / mods directory.
+    $modsync = Join-Path $ToolsRoot 'modsync.py'
+    $python = 'py'
+    $manifest = Join-Path $script:SessionRoot 'local-manifest.json'
+    & $python $modsync 'create' '--mods-dir' (Join-Path $IsaacRoot 'mods') '--log' $script:GameLog '--repentogon-dir' (Join-Path $IsaacRoot 'Repentogon') '--allow-empty' '--output' $manifest
+    if ($LASTEXITCODE -ne 0) { throw "Manifest konnte nicht erstellt werden (Exit $LASTEXITCODE)." }
+    $profile = Join-Path $script:SessionRoot 'host-profile.json'
+    & $python $modsync 'profile' 'create' '--manifest' $manifest '--name' 'Friend co-op' '--output' $profile
+    if ($LASTEXITCODE -ne 0) { throw "Host-Profil konnte nicht erstellt werden (Exit $LASTEXITCODE)." }
+    Write-SyncLog "Host-Profil aus Spiel-Log generiert: $profile"
+    return $profile
+}
+
+function Write-LobbyProgress([string]$Activity, [string]$Status, [int]$Percent) {
+    Write-Progress -Activity $Activity -Status $Status -PercentComplete ([Math]::Min(99, [Math]::Max(0, $Percent)))
+    Write-SyncLog "$Activity :: $Status ($Percent%)"
+}
+
+try {
+    Write-SyncLog "Auto-Lobby-Sync gestartet (Version $Version, Isaac PID $GamePid)."
+    $lobby = Wait-Lobby
+    if (-not $lobby) {
+        Write-SyncLog "Keine Lobby innerhalb von $TimeoutSeconds s gefunden - Sync nicht gestartet."
+        return
+    }
+    Write-SyncLog "Lobby erkannt: Rolle=$($lobby.Role) ID=$($lobby.Id)"
+    $bridge = Join-Path $ToolsRoot 'SteamModProfileBridge.exe'
+    $resync = Join-Path $ToolsRoot 'Resync-ProfileAndSaveData.ps1'
+    if (-not (Test-Path -LiteralPath $bridge -PathType Leaf)) { throw "Bridge fehlt: $bridge" }
+
+    Write-LobbyProgress 'Isaac ModSync Lobby' "Lobby $($lobby.Id) - SteamAPI wird initialisiert" 10
+
+    if ($lobby.Role -eq 'host') {
+        $profile = Get-ActiveProfilePath
+        $hostSession = Join-Path $script:SessionRoot 'host'
+        New-Item -ItemType Directory -Force -Path $hostSession | Out-Null
+        $bridgeArgs = @(
+            '--mode', 'host', '--isaac-root', "`"$IsaacRoot`"",
+            '--session', "`"$hostSession`"", '--profile', "`"$profile`"",
+            '--lobby-id', $lobby.Id, '--expected-version', $Version,
+            '--resync-script', "`"$resync`"", '--game-log', "`"$script:GameLog`"",
+            '--timeout', '86400'
+        )
+        Start-Process -FilePath $bridge -ArgumentList $bridgeArgs -WindowStyle Hidden -WorkingDirectory $ToolsRoot | Out-Null
+        $deadline = (Get-Date).AddSeconds(30)
+        while ((Get-Date) -lt $deadline -and -not (Test-Path -LiteralPath (Join-Path $hostSession 'steam-bridge.ready'))) {
+            Start-Sleep -Milliseconds 250
+        }
+        if (Test-Path -LiteralPath (Join-Path $hostSession 'steam-bridge.ready')) {
+            Write-LobbyProgress 'Isaac ModSync Lobby' 'Host bereit - Profil wird an joinende Freunde gesendet' 100
+            Write-SyncLog "Host-Sync aktiv. Profil: $profile"
+        } else {
+            Write-SyncLog 'Host-Sync: steam-bridge.ready nicht erschienen.'
+        }
+    } else {
+        $clientSession = Join-Path $script:SessionRoot 'client'
+        New-Item -ItemType Directory -Force -Path $clientSession | Out-Null
+        $bridgeArgs = @(
+            '--mode', 'client', '--isaac-root', "`"$IsaacRoot`"",
+            '--session', "`"$clientSession`"", '--lobby-id', $lobby.Id,
+            '--expected-version', $Version,
+            '--resync-script', "`"$resync`"", '--game-log', "`"$script:GameLog`"",
+            '--timeout', [string]$TimeoutSeconds
+        )
+        $proc = Start-Process -FilePath $bridge -ArgumentList $bridgeArgs -WindowStyle Hidden -PassThru -WorkingDirectory $ToolsRoot
+        $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+        while ((Get-Date) -lt $deadline -and -not $proc.HasExited) { Start-Sleep -Milliseconds 500 }
+        $received = Join-Path $clientSession 'received-host-profile.json'
+        if (-not (Test-Path -LiteralPath $received -PathType Leaf)) {
+            Write-SyncLog 'Client-Sync: kein Host-Profil empfangen.'
+            return
+        }
+        Write-LobbyProgress 'Isaac ModSync Lobby' 'Host-Profil empfangen - Workshop-Mods werden geprueft' 40
+        $modsync = Join-Path $ToolsRoot 'modsync.py'
+        $manifest = Join-Path $script:SessionRoot 'client-manifest.json'
+        & py $modsync 'create' '--mods-dir' (Join-Path $IsaacRoot 'mods') '--log' $script:GameLog '--repentogon-dir' (Join-Path $IsaacRoot 'Repentogon') '--allow-empty' '--output' $manifest
+        if ($LASTEXITCODE -ne 0) { throw "Client-Manifest fehlgeschlagen (Exit $LASTEXITCODE)." }
+        $stageRoot = Join-Path $script:SessionRoot 'stage'
+        $stageArgs = @($modsync, 'profile', 'stage', '--profile', $received, '--local-manifest', $manifest,
+            '--mods-dir', (Join-Path $IsaacRoot 'mods'), '--workshop-cache', (Join-Path (Split-Path (Split-Path $IsaacRoot)) 'workshop\content\250900'), '--output', $stageRoot)
+        $steamCmd = Get-SteamCmd
+        if ($steamCmd) { $stageArgs += @('--steamcmd', [IO.Path]::GetFullPath($steamCmd)) }
+        & py @stageArgs
+        if ($LASTEXITCODE -ne 0) { throw "Mod-Staging fehlgeschlagen (Exit $LASTEXITCODE)." }
+        Write-LobbyProgress 'Isaac ModSync Lobby' 'Mods heruntergeladen und verifiziert' 80
+        $stagedMods = Join-Path $stageRoot 'mods'
+        if (Test-Path -LiteralPath $stagedMods -PathType Container) {
+            $realMods = Join-Path $IsaacRoot 'mods'
+            $held = $realMods + '.modsync-original-' + [DateTime]::UtcNow.ToString('yyyyMMddHHmmssfff')
+            if (-not (Test-Path -LiteralPath $held)) { [IO.Directory]::Move($realMods, $held) }
+            New-Item -ItemType Junction -Path $realMods -Target $stagedMods | Out-Null
+            Write-SyncLog "Client-Mod-Set aktiv (Junction). Original: $held"
+        }
+        Write-LobbyProgress 'Isaac ModSync Lobby' 'Sync abgeschlossen' 100
+        Write-SyncLog 'Client-Sync abgeschlossen. Hinweis: Live-Hot-Reload ist sandbox-only; bei Bedarf Isaac neu starten.'
+    }
+} catch {
+    Write-SyncLog "FEHLER: $($_.Exception.Message)"
+} finally {
+    Write-Progress -Activity 'Isaac ModSync Lobby' -Completed
+}

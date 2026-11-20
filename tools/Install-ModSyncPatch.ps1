@@ -642,7 +642,19 @@ function Invoke-Apply {
     Register-Uninstall (Join-Path $ToolsRoot 'Isaac-Freund-Test-Setup.exe')
     Write-Log 'Online-Patch dauerhaft aktiviert.'
     $gamePid = Start-IsaacDirect $root $LauncherExe
-    Start-CompanionHidden $root $gamePid
+    # Full auto lobby sync: the background watcher detects host/client from the
+    # game log and starts the Steam P2P companion in the correct mode.
+    $watcher = Join-Path $ToolsRoot 'Start-ModSyncLobbySync.ps1'
+    if (Test-Path -LiteralPath $watcher -PathType Leaf) {
+        try {
+            Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass',
+                '-File', "`"$watcher`"", '-ToolsRoot', "`"$ToolsRoot`"", '-IsaacRoot', "`"$root`"",
+                '-GamePid', "$gamePid", '-Version', '0.0.16') -WindowStyle Hidden -ErrorAction Stop | Out-Null
+            Write-Log 'Auto-Lobby-Sync-Watcher gestartet.'
+        } catch { Write-Log "Auto-Lobby-Sync-Watcher nicht gestartet: $($_.Exception.Message)" }
+    } else {
+        Start-CompanionHidden $root $gamePid
+    }
     $state | ConvertTo-Json -Depth 8
 }
 

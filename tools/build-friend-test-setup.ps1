@@ -27,6 +27,7 @@ $patchedDllSource = Join-Path $repo 'artifacts-v0.0.16\zhlREPENTOGON.dll'
 $loaderSource = Join-Path $repo 'artifacts-v0.0.16\zhlLoader.dll'
 $libZhlSource = Join-Path $repo 'artifacts-v0.0.16\libzhl.dll'
 $installScriptSource = Join-Path $PSScriptRoot 'Install-ModSyncPatch.ps1'
+$lobbyWatcherSource = Join-Path $PSScriptRoot 'Start-ModSyncLobbySync.ps1'
 
 $version = '0.0.6'
 if (Test-Path -LiteralPath $versionSource -PathType Leaf) {
@@ -50,6 +51,7 @@ if (-not (Test-Path -LiteralPath $patchedDllSource -PathType Leaf)) { throw "Gep
 if (-not (Test-Path -LiteralPath $loaderSource -PathType Leaf)) { throw "zhlLoader.dll fehlt: $loaderSource" }
 if (-not (Test-Path -LiteralPath $libZhlSource -PathType Leaf)) { throw "libzhl.dll fehlt: $libZhlSource" }
 if (-not (Test-Path -LiteralPath $installScriptSource -PathType Leaf)) { throw "Installationsskript fehlt: $installScriptSource" }
+if (-not (Test-Path -LiteralPath $lobbyWatcherSource -PathType Leaf)) { throw "Lobby-Watcher fehlt: $lobbyWatcherSource" }
 if ((Test-Path -LiteralPath $setupExe) -and -not $Force) {
     throw "Ausgabedatei existiert bereits; wird nicht Ã¼berschrieben: $setupExe (mit -Force ausdrÃ¼cklich ersetzen)"
 }
@@ -70,6 +72,7 @@ Copy-Item -LiteralPath $patchedDllSource -Destination (Join-Path $stage 'zhlREPE
 Copy-Item -LiteralPath $loaderSource -Destination (Join-Path $stage 'zhlLoader.dll')
 Copy-Item -LiteralPath $libZhlSource -Destination (Join-Path $stage 'libzhl.dll')
 Copy-Item -LiteralPath $installScriptSource -Destination (Join-Path $stage 'Install-ModSyncPatch.ps1')
+Copy-Item -LiteralPath $lobbyWatcherSource -Destination (Join-Path $stage 'Start-ModSyncLobbySync.ps1')
 $bridgeExe = Join-Path $stage 'SteamModProfileBridge.exe'
 $bridgeObj = Join-Path $stage 'SteamModProfileBridge.obj'
 $bridgeRc = Join-Path $stage 'SteamModProfileBridge.rc'
@@ -152,6 +155,7 @@ $resourceFile = Join-Path $stage 'FriendTestSetup.rc'
 #define IDR_INSTALL_SCRIPT 110
 #define IDR_ZHL_LOADER 111
 #define IDR_LIBZHL 112
+#define IDR_LOBBY_WATCHER 113
 IDR_PATCHER RCDATA "Patch.exe"
 IDR_GUIDE RCDATA "setup-freundestest-de.txt"
 IDR_MODSYNC RCDATA "modsync.py"
@@ -164,6 +168,7 @@ IDR_PATCHED_DLL RCDATA "zhlREPENTOGON.dll"
 IDR_INSTALL_SCRIPT RCDATA "Install-ModSyncPatch.ps1"
 IDR_ZHL_LOADER RCDATA "zhlLoader.dll"
 IDR_LIBZHL RCDATA "libzhl.dll"
+IDR_LOBBY_WATCHER RCDATA "Start-ModSyncLobbySync.ps1"
 
 VS_VERSION_INFO VERSIONINFO
   FILEVERSION $versionComma,0
@@ -270,7 +275,8 @@ try {
         @(109, 'zhlREPENTOGON.dll'),
         @(110, 'Install-ModSyncPatch.ps1'),
         @(111, 'zhlLoader.dll'),
-        @(112, 'libzhl.dll')
+        @(112, 'libzhl.dll'),
+        @(113, 'Start-ModSyncLobbySync.ps1')
     )
     foreach ($item in $payload) {
         $embedded = Read-EmbeddedResource $module 10 ([int]$item[0])
