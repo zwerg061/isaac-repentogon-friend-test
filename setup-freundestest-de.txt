@@ -1,5 +1,5 @@
 ISAAC REPENTOGON – FREUND-TEST (EXPERIMENTELL)
-Version 0.0.7 (experimentell)
+Version 0.0.8 (experimentell)
 ================================================
 
 WICHTIG: FREIGABE NUR FUER DEN GESCHLOSSENEN FREUNDESTEST.
@@ -11,6 +11,18 @@ prueft zusaetzlich `--expected-version`. Bei Abweichung bricht der Runner vor
 jeglichem Versand, Download oder Aenderung ab.
 Ein echter Zwei-Spieler-Nachweis steht weiterhin aus: Der Test ist bewusst auf
 eine vertraute Person und einen isolierten Spielstand begrenzt.
+
+NEU in v0.0.8: Dauerhafter 1-Klick-Patch und komplette 1-Klick-Deinstallation.
+- "Patch aktivieren" (oder der Schalter im isaac-mod-launcher): Installiert
+  REPENTOGON bei Bedarf automatisch, sichert die Original-DLL einmalig als
+  `zhlREPENTOGON.dll.orig` (SHA256-geprueft), installiert unsere gepatchte DLL,
+  startet den Companion versteckt und oeffnet Isaac ohne sichtbares
+  REPENTOGONLauncher-Fenster.
+- "Patch abschalten & deinstallieren", Startmenue-Verknuepfung, Windows
+  "Apps & Features" oder `Isaac-Freund-Test-Setup.exe --uninstall`: beendet den
+  Companion, stellt die exakte Originaldatei wieder her (oder entfernt eine von
+  uns installierte REPENTOGON-Installation), entfernt Helper-Mods, Registry-Eintrag
+  und Verknuepfung. Das Spiel ist danach wieder im Urzustand.
 
 NEU in v0.0.7: Das Setup enthaelt die verifizierte, gepatchte
 `zhlREPENTOGON.dll` (Online-Lobby-Unlock, Hot-Reload, Crash-/Desync-Fixes).

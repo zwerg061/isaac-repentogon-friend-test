@@ -23,7 +23,8 @@ $sessionSource = Join-Path $PSScriptRoot 'Run-TempModProfile.ps1'
 $resyncSource = Join-Path $PSScriptRoot 'Resync-ProfileAndSaveData.ps1'
 $bridgeSource = Join-Path $repo 'tool\SteamModProfileBridge.cpp'
 $versionSource = Join-Path $repo 'VERSION'
-$patchedDllSource = Join-Path $repo 'artifacts-v0.0.7\zhlREPENTOGON.dll'
+$patchedDllSource = Join-Path $repo 'artifacts-v0.0.8\zhlREPENTOGON.dll'
+$installScriptSource = Join-Path $PSScriptRoot 'Install-ModSyncPatch.ps1'
 
 $version = '0.0.6'
 if (Test-Path -LiteralPath $versionSource -PathType Leaf) {
@@ -44,6 +45,7 @@ if (-not (Test-Path -LiteralPath $resyncSource)) { throw "Desync-Resync-Skript f
 if (-not (Test-Path -LiteralPath $bridgeSource)) { throw "Steam-P2P-Companion-Quelle fehlt: $bridgeSource" }
 if (-not (Test-Path -LiteralPath $versionSource)) { throw "VERSION fehlt: $versionSource" }
 if (-not (Test-Path -LiteralPath $patchedDllSource -PathType Leaf)) { throw "Gepatchte REPENTOGON-DLL fehlt: $patchedDllSource" }
+if (-not (Test-Path -LiteralPath $installScriptSource -PathType Leaf)) { throw "Installationsskript fehlt: $installScriptSource" }
 if ((Test-Path -LiteralPath $setupExe) -and -not $Force) {
     throw "Ausgabedatei existiert bereits; wird nicht Ã¼berschrieben: $setupExe (mit -Force ausdrÃ¼cklich ersetzen)"
 }
@@ -61,6 +63,7 @@ Copy-Item -LiteralPath $sessionSource -Destination (Join-Path $stage 'Run-TempMo
 Copy-Item -LiteralPath $resyncSource -Destination (Join-Path $stage 'Resync-ProfileAndSaveData.ps1')
 Copy-Item -LiteralPath $versionSource -Destination (Join-Path $stage 'VERSION')
 Copy-Item -LiteralPath $patchedDllSource -Destination (Join-Path $stage 'zhlREPENTOGON.dll')
+Copy-Item -LiteralPath $installScriptSource -Destination (Join-Path $stage 'Install-ModSyncPatch.ps1')
 $bridgeExe = Join-Path $stage 'SteamModProfileBridge.exe'
 $bridgeObj = Join-Path $stage 'SteamModProfileBridge.obj'
 $bridgeRc = Join-Path $stage 'SteamModProfileBridge.rc'
@@ -140,6 +143,7 @@ $resourceFile = Join-Path $stage 'FriendTestSetup.rc'
 #define IDR_VERSION 107
 #define IDR_RESYNC 108
 #define IDR_PATCHED_DLL 109
+#define IDR_INSTALL_SCRIPT 110
 IDR_PATCHER RCDATA "Patch.exe"
 IDR_GUIDE RCDATA "setup-freundestest-de.txt"
 IDR_MODSYNC RCDATA "modsync.py"
@@ -149,6 +153,7 @@ IDR_APPID RCDATA "steam_appid.txt"
 IDR_VERSION RCDATA "VERSION"
 IDR_RESYNC RCDATA "Resync-ProfileAndSaveData.ps1"
 IDR_PATCHED_DLL RCDATA "zhlREPENTOGON.dll"
+IDR_INSTALL_SCRIPT RCDATA "Install-ModSyncPatch.ps1"
 
 VS_VERSION_INFO VERSIONINFO
   FILEVERSION $versionComma,0
@@ -252,7 +257,8 @@ try {
         @(106, 'steam_appid.txt'),
         @(107, 'VERSION'),
         @(108, 'Resync-ProfileAndSaveData.ps1'),
-        @(109, 'zhlREPENTOGON.dll')
+        @(109, 'zhlREPENTOGON.dll'),
+        @(110, 'Install-ModSyncPatch.ps1')
     )
     foreach ($item in $payload) {
         $embedded = Read-EmbeddedResource $module 10 ([int]$item[0])

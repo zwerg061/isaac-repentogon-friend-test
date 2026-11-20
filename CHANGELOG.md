@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.0.8 - permanent one-click patch and complete one-click removal
+
+- `Install-ModSyncPatch.ps1` provides `Apply`, `Uninstall` and `Status`. Apply
+  installs official REPENTOGON automatically if missing, backs up the original
+  `zhlREPENTOGON.dll` once as `zhlREPENTOGON.dll.orig` (SHA-256 verified),
+  installs the patched DLL, starts a hidden companion and launches Isaac without
+  a visible launcher window (`--stealth-mode`, game window shown afterwards).
+- Uninstall stops companion processes, restores the exact original DLL (or
+  removes a REPENTOGON installation created by us), removes `zz_modsync*`
+  helper mods, the HKCU Apps & Features entry and the Start menu shortcut.
+  Also available via `Isaac-Freund-Test-Setup.exe --uninstall`.
+- The setup embeds the installer script as RCDATA 110; all 10 embedded resources
+  and `asInvoker` are verified after the build.
+- The mod launcher offers a prominent "Online-Patch aktiv / abschalten" switch
+  that uses the same script, and detects `SteamModProfileBridge.exe` in all
+  build locations so the online-sync tile turns green.
+- Fixture test `tests/test_permanent_patch.ps1` verifies the full cycle
+  (Apply -> patched hash -> Uninstall -> exact original hash), idempotency,
+  status, tamper protection and complete removal of an auto-installed REPENTOGON.
+
 ## 0.0.7 - patched REPENTOGON DLL applied transactionally on the real install
 
 - The setup now embeds the verified, patched `zhlREPENTOGON.dll` built from

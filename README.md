@@ -1,8 +1,15 @@
 # Isaac REPENTOGON Friend Test
 
-**Version:** 0.0.7 (experimental)<br>
+**Version:** 0.0.8 (experimental)<br>
 **Status:** menu fix and patched REPENTOGON DLL verified in a sandbox; connection
 not yet verified with a second player.
+
+> **v0.0.8 adds permanent one-click activation and complete removal.** Run the
+> setup, click "Patch aktivieren" (or use the launcher switch) to install
+> REPENTOGON if missing, back up the original DLL, apply the patch and start a
+> hidden companion. Click "Patch abschalten & deinstallieren", use the Start menu
+> shortcut, "Apps & Features", or `setup.exe --uninstall` to restore the exact
+> original state. No game is changed until you activate.
 
 > **v0.0.7 adds the transactional DLL swap.** The setup embeds the verified
 > patched `zhlREPENTOGON.dll`. With `-PatchedRepentogonDll`, the runner backs up
