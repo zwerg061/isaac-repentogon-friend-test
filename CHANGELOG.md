@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.0.9 - robust one-click activation with real error reporting
+
+- "Patch aktivieren" now installs the embedded tools automatically when they
+  are missing, so the button works without a prior "Installieren" click.
+  Both click orders are covered by a Win32 UI automation fixture test
+  (`tests/test_setup_click_order.ps1`), no screenshots involved.
+- PowerShell stdout/stderr and script errors are written to
+  `%LOCALAPPDATA%\IsaacModSync\install.log`; the exact error cause is shown in
+  the status field and message box instead of the generic failure message.
+- If Steam auto-detection fails, a Windows file picker for `isaac-ng.exe` is
+  opened and the selected directory is passed as `-IsaacRoot`.
+- The setup keeps the full permanent patch and one-click uninstall behaviour
+  of v0.0.8. All 10 embedded resources and `asInvoker` are verified.
+
 ## 0.0.8 - permanent one-click patch and complete one-click removal
 
 - `Install-ModSyncPatch.ps1` provides `Apply`, `Uninstall` and `Status`. Apply

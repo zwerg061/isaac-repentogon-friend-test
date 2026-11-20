@@ -29,6 +29,16 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# Hidden automation hooks (used by the GUI fixture tests).
+if ($env:ISAAC_MODSYNC_NO_LAUNCH -eq '1') { $NoLaunch = $true; $NoCompanion = $true }
+$script:LogPath = if ($env:ISAAC_MODSYNC_LOG_PATH) { $env:ISAAC_MODSYNC_LOG_PATH } else { Join-Path $env:LOCALAPPDATA 'IsaacModSync\install.log' }
+function Write-InstallLog([string]$Text) {
+    try {
+        $dir = Split-Path -Parent $script:LogPath
+        if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+        Add-Content -LiteralPath $script:LogPath -Value ("[{0}] {1}" -f [DateTime]::UtcNow.ToString('o'), $Text) -Encoding UTF8
+    } catch { }
+}
 $script:StatePath = Join-Path $env:LOCALAPPDATA 'IsaacModSync\permanent-patch.json'
 $script:UninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\IsaacModSyncFriendTest'
 $script:StartMenuFolder = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Isaac ModSync Friend Test'
@@ -37,6 +47,7 @@ $script:RepentogonApi = 'https://api.github.com/repos/TeamREPENTOGON/REPENTOGON/
 
 function Write-Log([string]$Message) {
     if (-not $Quiet) { Write-Host $Message }
+    Write-InstallLog $Message
 }
 
 function Get-Sha256([string]$Path) {
@@ -52,6 +63,9 @@ function Get-NormalizedPath([string]$Path) {
 
 function Find-IsaacRoot {
     param([string]$Override)
+    if (-not $Override -and $env:ISAAC_MODSYNC_TEST_ISAAC_ROOT) {
+        $Override = $env:ISAAC_MODSYNC_TEST_ISAAC_ROOT
+    }
     if ($Override) {
         $candidate = Get-NormalizedPath $Override
         if (Test-Path -LiteralPath (Join-Path $candidate 'isaac-ng.exe') -PathType Leaf) { return $candidate }
@@ -366,8 +380,15 @@ function Invoke-Status {
     }
 }
 
-switch ($Action) {
-    'Apply' { Invoke-Apply }
-    'Uninstall' { Invoke-Uninstall }
-    'Status' { Invoke-Status | ConvertTo-Json -Compress -Depth 8 }
+try {
+    switch ($Action) {
+        'Apply' { Invoke-Apply }
+        'Uninstall' { Invoke-Uninstall }
+        'Status' { Invoke-Status | ConvertTo-Json -Compress -Depth 8 }
+    }
+} catch {
+    $message = ($_ | Out-String).Trim()
+    Write-InstallLog ("FEHLER [{0}]: {1}" -f $Action, $message)
+    [Console]::Error.WriteLine($message)
+    throw
 }
