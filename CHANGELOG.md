@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.0.15 - game start is best-effort, with Steam fallback
+
+- `Start-IsaacDirect()` no longer throws when the hidden launcher does not
+  produce a game process. It tries a stealth launch first, then a minimal-flag
+  launch, and finally `steam://rungameid/250900`. A Steam-handled start is a
+  successful outcome, not an error - the patch stays applied.
+- The wait loop no longer aborts merely because the launcher process exits;
+  it keeps looking for `isaac-ng.exe` for up to 30 seconds per attempt.
+- The generated launcher config lives in the fixed staging folder.
+
 ## 0.0.14 - hotfix: do not overwrite PowerShell's read-only $PID
 
 - `Install-ModSyncPatch.ps1::Show-GameWindow` used `$pid` as the callback

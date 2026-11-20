@@ -445,14 +445,10 @@ function Start-IsaacDirect([string]$Root, [string]$Launcher) {
     if ($NoLaunch) { return 0 }
     $gameExe = Join-Path $Root 'isaac-ng.exe'
     $launcherExe = if ($Launcher) { $Launcher } elseif (Test-Path -LiteralPath 'E:\REPENTOGONLauncher\REPENTOGONLauncher.exe') { 'E:\REPENTOGONLauncher\REPENTOGONLauncher.exe' } else { $null }
-    if (-not $launcherExe -or -not (Test-Path -LiteralPath $launcherExe -PathType Leaf)) {
-        Write-Log 'Kein REPENTOGON-Launcher gefunden - starte isaac-ng.exe direkt.'
-        $proc = Start-Process -FilePath $gameExe -WorkingDirectory $Root -PassThru
-        return $proc.Id
-    }
-    # Der Launcher injiziert zhlLoader.dll in einen suspendierten Prozess.
-    # --stealth-mode verhindert sein Zwischenfenster; das Spiel wird danach sichtbar gemacht.
-    $config = Join-Path $env:TEMP ('isaac-modsync-launcher-' + [Guid]::NewGuid().ToString('N') + '.ini')
+
+    # Fixed staging folder instead of a random %TEMP% path (single AV exclusion).
+    $config = Join-Path $script:StagingRoot 'repentogon_launcher.ini'
+    try { New-Item -ItemType Directory -Force -Path $script:StagingRoot | Out-Null } catch { }
     @"
 [General]
 IsaacExecutable = $gameExe
@@ -468,17 +464,49 @@ LuaDebug = 0
 [Shared]
 LaunchMode = 0
 "@ | Set-Content -LiteralPath $config -Encoding ASCII
-    $arguments = @('--isaac', "`"$gameExe`"", '--launch-mode', 'repentogon', '--stealth-mode',
-        '--skip-wizard', '--skip-repentogon-update', '--skip-unique', '--configuration-file', "`"$config`"")
-    $proc = Start-Process -FilePath $launcherExe -ArgumentList $arguments -WindowStyle Hidden -PassThru
-    $deadline = (Get-Date).AddSeconds(120)
-    while ((Get-Date) -lt $deadline) {
-        $game = @(Get-Process -Name 'isaac-ng' -ErrorAction SilentlyContinue) | Select-Object -First 1
-        if ($game) { Start-Sleep -Milliseconds 1200; Show-GameWindow $game.Id; return $game.Id }
-        if ($proc.HasExited) { break }
-        Start-Sleep -Milliseconds 400
+
+    # Variant 1: stealth launch (no launcher window). Variant 2: minimal flags
+    # without --stealth-mode / --skip-unique if the first attempt is rejected.
+    $attempts = @(
+        @('--isaac', "`"$gameExe`"", '--launch-mode', 'repentogon', '--stealth-mode',
+          '--skip-wizard', '--skip-repentogon-update', '--configuration-file', "`"$config`""),
+        @('--isaac', "`"$gameExe`"", '--launch-mode', 'repentogon',
+          '--skip-wizard', '--configuration-file', "`"$config`"")
+    )
+
+    if ($launcherExe -and (Test-Path -LiteralPath $launcherExe -PathType Leaf)) {
+        foreach ($arguments in $attempts) {
+            try {
+                Start-Process -FilePath $launcherExe -ArgumentList $arguments -WindowStyle Hidden -ErrorAction Stop | Out-Null
+            } catch {
+                Write-Log "Launcher-Start nicht moeglich: $($_.Exception.Message)"
+                continue
+            }
+            # Do not abort just because the launcher process exits: it may hand
+            # off to Steam or finish after spawning the game.
+            $deadline = (Get-Date).AddSeconds(30)
+            while ((Get-Date) -lt $deadline) {
+                $game = @(Get-Process -Name 'isaac-ng' -ErrorAction SilentlyContinue) | Select-Object -First 1
+                if ($game) {
+                    Start-Sleep -Milliseconds 1200
+                    try { Show-GameWindow $game.Id } catch { Write-Log "Fenster nicht sichtbar gemacht: $($_.Exception.Message)" }
+                    Write-Log "Spiel ueber REPENTOGON-Launcher gestartet (PID $($game.Id))."
+                    return $game.Id
+                }
+                Start-Sleep -Milliseconds 400
+            }
+            Write-Log 'Launcher-Versuch ohne sichtbaren Spielprozess beendet - naechster Versuch.'
+        }
     }
-    throw 'Spielstart ueber den versteckten Launcher fehlgeschlagen.'
+
+    # Fallback: let Steam handle the launch. This is a valid outcome, not an error.
+    try {
+        Start-Process 'steam://rungameid/250900' -ErrorAction Stop
+        Write-Log 'Steam-Start (steam://rungameid/250900) angestossen - Patch bleibt aktiv.'
+    } catch {
+        Write-Log "Steam-Start nicht moeglich: $($_.Exception.Message). Patch bleibt aktiv; bitte Isaac manuell starten."
+    }
+    return 0
 }
 
 function Register-Uninstall([string]$SetupExe) {
