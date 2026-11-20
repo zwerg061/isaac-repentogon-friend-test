@@ -9,6 +9,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
+if (-not [IO.Path]::IsPathRooted($OutDir)) { $OutDir = Join-Path (Get-Location) $OutDir }
+$OutDir = [IO.Path]::GetFullPath($OutDir)
 $stage = Join-Path $OutDir 'payload'
 $setupExe = Join-Path $OutDir 'Isaac-Freund-Test-Setup.exe'
 . (Join-Path $PSScriptRoot 'find-vcvars.ps1')
