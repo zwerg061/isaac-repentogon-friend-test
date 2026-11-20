@@ -141,6 +141,22 @@ try {
     if (($script:stoppedPids | Select-Object -Unique).Count -ne 1 -or $script:stoppedPids.Count -ne 2) {
         throw 'Stop-GameProcesses hat nicht beide Prozessnamen gestoppt.'
     }
+
+    # Rename-before-write: the existing file must move aside, be restorable,
+    # and the .old file must be removable again.
+    $renameTarget = Join-Path $fixture 'rename-target.dll'
+    [IO.File]::WriteAllBytes($renameTarget, [Text.Encoding]::ASCII.GetBytes('RENAME-ME'))
+    $renamed = Rename-ExistingFile $renameTarget
+    if (-not $renamed -or -not (Test-Path -LiteralPath $renamed -PathType Leaf) -or (Test-Path -LiteralPath $renameTarget -PathType Leaf)) {
+        throw 'Rename-ExistingFile hat die Zieldatei nicht beiseite verschoben.'
+    }
+    Restore-OldFile $renamed $renameTarget
+    if (-not (Test-Path -LiteralPath $renameTarget -PathType Leaf)) { throw 'Restore-OldFile hat die Datei nicht zurueckgesetzt.' }
+    $renamedAgain = Rename-ExistingFile $renameTarget
+    Remove-OldFile $renamedAgain
+    if (Test-Path -LiteralPath $renamedAgain -PathType Leaf) { throw 'Remove-OldFile hat die .old-Datei nicht entfernt.' }
+    Write-Output 'PASS: Rename-before-write (move aside, restore, cleanup)'
+
     try {
         $env:ISAAC_MODSYNC_TEST_ISAAC_ROOT = $lockedRoot
         $env:ISAAC_MODSYNC_TEST_REPENTOGON_ZIP = $fixtureZip
@@ -152,7 +168,9 @@ try {
         $backupHash = (Get-Hash "$lockedDll.orig")
         $expectedOfficial = (Get-FileHash -InputStream ([IO.MemoryStream]::new($officialDllBytes)) -Algorithm SHA256).Hash
         if ($backupHash -ne $expectedOfficial) { throw 'Original-DLL aus dem Zip wurde nicht korrekt gesichert.' }
-        Write-Output 'PASS: ReadOnly-Ziel wird sicher überschrieben; Game-Prozesse werden gestoppt'
+        $leftovers = @(Get-ChildItem -LiteralPath $lockedRoot -Recurse -File -Filter '*.old.*' -ErrorAction SilentlyContinue)
+        if ($leftovers.Count -gt 0) { throw "Es blieben .old-Dateien zurueck: $($leftovers.FullName -join ', ')" }
+        Write-Output 'PASS: ReadOnly-Ziel wird per Rename sicher überschrieben; Game-Prozesse werden gestoppt'
     } finally { }
 
     Write-Output 'ALL permanent-patch cycle tests passed.'

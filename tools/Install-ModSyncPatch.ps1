@@ -99,14 +99,75 @@ function Invoke-WithRetry([scriptblock]$Action, [string]$Description) {
     }
 }
 
-function Copy-FileWithRetry([string]$Source, [string]$Destination) {
-    Invoke-WithRetry {
-        Clear-ReadOnly $Destination
-        Copy-Item -LiteralPath $Source -Destination $Destination -Force -ErrorAction Stop
-        if ((Get-Sha256 $Destination) -ne (Get-Sha256 $Source)) {
-            throw "Hash-Mismatch nach dem Kopieren: $Destination"
+function New-OldPath([string]$Path) {
+    return "$Path.old.$([DateTime]::UtcNow.ToString('yyyyMMddHHmmssfff'))"
+}
+
+function Remove-StaleOldFiles([string]$Directory) {
+    if (-not $Directory -or -not (Test-Path -LiteralPath $Directory -PathType Container)) { return }
+    Get-ChildItem -LiteralPath $Directory -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -like '*.old.*' } |
+        ForEach-Object {
+            try {
+                Clear-ReadOnly $_.FullName
+                Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop
+                Write-Log "Veraltete .old-Datei entfernt: $($_.FullName)"
+            } catch {
+                Write-Log "Veraltete .old-Datei bleibt bis zum naechsten Lauf: $($_.FullName)"
+            }
         }
-    } "Kopieren nach $Destination"
+}
+
+function Rename-ExistingFile([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
+    $old = New-OldPath $Path
+    # A rename is permitted on files a scanner currently holds open, unlike an
+    # in-place overwrite - this is the core fix for the remaining access denied.
+    Invoke-WithRetry {
+        Clear-ReadOnly $Path
+        [IO.File]::Move($Path, $old)
+        if (-not (Test-Path -LiteralPath $old -PathType Leaf)) { throw "Umbenennung nicht sichtbar: $old" }
+    } "Umbenennen von $Path"
+    Write-Log "Bestehende Datei umbenannt: $old"
+    return $old
+}
+
+function Restore-OldFile([string]$Old, [string]$Destination) {
+    if (-not $Old -or -not (Test-Path -LiteralPath $Old -PathType Leaf)) { return }
+    Invoke-WithRetry {
+        if (Test-Path -LiteralPath $Destination -PathType Leaf) {
+            Clear-ReadOnly $Destination
+            Remove-Item -LiteralPath $Destination -Force -ErrorAction Stop
+        }
+        [IO.File]::Move($Old, $Destination)
+    } "Wiederherstellen von $Destination"
+}
+
+function Remove-OldFile([string]$Old) {
+    if ($Old -and (Test-Path -LiteralPath $Old -PathType Leaf)) {
+        try {
+            Clear-ReadOnly $Old
+            Remove-Item -LiteralPath $Old -Force -ErrorAction Stop
+        } catch {
+            Write-Log "Alte Datei bleibt fuer den naechsten Lauf: $Old"
+        }
+    }
+}
+
+function Copy-FileWithRetry([string]$Source, [string]$Destination) {
+    $old = Rename-ExistingFile $Destination
+    try {
+        Invoke-WithRetry {
+            Copy-Item -LiteralPath $Source -Destination $Destination -Force -ErrorAction Stop
+            if ((Get-Sha256 $Destination) -ne (Get-Sha256 $Source)) {
+                throw "Hash-Mismatch nach dem Kopieren: $Destination"
+            }
+        } "Kopieren nach $Destination"
+    } catch {
+        Restore-OldFile $old $Destination
+        throw
+    }
+    Remove-OldFile $old
 }
 
 function Get-NormalizedPath([string]$Path) {
@@ -228,10 +289,16 @@ function Install-Repentogon([string]$Root) {
             $parent = Split-Path -Parent $relative
             if ($parent) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
             $target = $relative
-            Invoke-WithRetry {
-                Clear-ReadOnly $target
-                [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $target, $true)
-            } "Entpacken von $target"
+            $old = Rename-ExistingFile $target
+            try {
+                Invoke-WithRetry {
+                    [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $target, $false)
+                } "Entpacken von $target"
+            } catch {
+                Restore-OldFile $old $target
+                throw
+            }
+            Remove-OldFile $old
             $installed += ($relative.Substring($Root.Length).TrimStart('\'))
         }
     } finally {
@@ -366,6 +433,7 @@ function Remove-HelperMods([string]$Root) {
 
 function Invoke-Apply {
     $root = Get-NormalizedPath (Find-IsaacRoot $IsaacRoot)
+    Remove-StaleOldFiles $root
     Stop-GameProcesses
     $patched = if ($PatchedDll) { [IO.Path]::GetFullPath($PatchedDll) } else { Join-Path $ToolsRoot 'zhlREPENTOGON.dll' }
     if (-not (Test-Path -LiteralPath $patched -PathType Leaf)) { throw "Gepatchte DLL fehlt: $patched" }
@@ -410,6 +478,7 @@ function Invoke-Apply {
 function Invoke-Uninstall {
     $state = Read-State
     $root = if ($state -and $state.isaac_root) { $state.isaac_root } else { try { Find-IsaacRoot $IsaacRoot } catch { $null } }
+    Remove-StaleOldFiles $root
     Stop-GameProcesses
     Stop-Companion
     if ($state -and $state.repentogon_installed_by_us -and $root) {

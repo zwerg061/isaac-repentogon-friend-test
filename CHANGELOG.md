@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.0.11 - rename-before-write for antivirus / file-lock safety
+
+- Existing target files are now renamed to `<name>.old.<timestamp>` before any
+  `ExtractToFile` or `Copy-Item`. Writing to the fresh target path avoids the
+  remaining `UnauthorizedAccessException` even when a scanner holds the old
+  file open. The `.old` file is removed after a successful write, restored on
+  failure, and stale `.old` files are cleaned up at the next run.
+- `test_setup_click_order.ps1` now guarantees cleanup of every started setup
+  window/process, every `setup-ui-*` fixture folder and all injected
+  `ISAAC_MODSYNC_TEST_*` environment variables, including on failure.
+
 ## 0.0.10 - safe overwrite of locked / ReadOnly REPENTOGON files
 
 - `Install-ModSyncPatch.ps1` now stops running `isaac-ng.exe` and

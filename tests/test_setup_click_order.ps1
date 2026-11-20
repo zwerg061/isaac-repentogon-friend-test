@@ -2,8 +2,11 @@
 # Clicks real Win32 buttons with BM_CLICK - no screenshots, no real game files.
 $ErrorActionPreference = 'Stop'
 
-$setup = 'G:\Coode\the binding of isaac\multyplayer modet\sandbox\release-v0.0.1\artifacts-v0.0.10\Isaac-Freund-Test-Setup.exe'
+$setup = 'G:\Coode\the binding of isaac\multyplayer modet\sandbox\release-v0.0.1\artifacts-v0.0.11\Isaac-Freund-Test-Setup.exe'
 if (-not (Test-Path -LiteralPath $setup -PathType Leaf)) { throw "Setup fehlt: $setup" }
+
+$script:AllFixtures = @()
+$script:AllRuns = @()
 
 if (-not ('SetupUi' -as [type])) {
     Add-Type -TypeDefinition @'
@@ -70,6 +73,7 @@ function Close-Setup([IntPtr]$Window, $Process) {
 
 function New-Fixture([string]$Tag) {
     $fixture = Join-Path ([IO.Path]::GetTempPath()) ("setup-ui-$Tag-" + [Guid]::NewGuid().ToString('N'))
+    $script:AllFixtures += $fixture
     $isaac = Join-Path $fixture 'isaac'
     $tools = Join-Path $fixture 'tools'
     New-Item -ItemType Directory -Force -Path (Join-Path $isaac 'resources\scripts') | Out-Null
@@ -91,13 +95,17 @@ function Start-SetupWithFixture($Fixture) {
     $env:APPDATA = Join-Path $Fixture.Root 'appdata'
     $process = Start-Process -FilePath $setup -PassThru
     $window = Wait-Window $process
-    return @{ Process = $process; Window = $window }
+    $run = @{ Process = $process; Window = $window }
+    $script:AllRuns += $run
+    return $run
 }
 
 $oldLocal = $env:LOCALAPPDATA
 $oldAppData = $env:APPDATA
 $oldTestRoot = $env:ISAAC_MODSYNC_TEST_ISAAC_ROOT
 $oldNoLaunch = $env:ISAAC_MODSYNC_NO_LAUNCH
+$oldTestZip = $env:ISAAC_MODSYNC_TEST_REPENTOGON_ZIP
+$oldLogPath = $env:ISAAC_MODSYNC_LOG_PATH
 
 try {
     # Sequence A: click "Patch aktivieren" directly, without installing first.
@@ -177,8 +185,33 @@ public static class Dlg { [DllImport("user32.dll", CharSet=CharSet.Unicode)] pub
 
     Write-Output 'ALL setup click-order UI tests passed.'
 } finally {
+    # Close every window/process this test started, even on a partial failure.
+    foreach ($run in @($script:AllRuns)) {
+        try { Close-Setup $run.Window $run.Process } catch { }
+    }
+    # Remove every fixture directory, including ones created before a failure.
+    foreach ($fixture in @($script:AllFixtures)) {
+        if ($fixture -and (Test-Path -LiteralPath $fixture)) {
+            try { Remove-Item -LiteralPath $fixture -Recurse -Force -ErrorAction Stop } catch { }
+        }
+    }
+    # Also sweep older leftovers from previous interrupted runs.
+    Get-ChildItem ([IO.Path]::GetTempPath()) -Directory -Filter 'setup-ui-*' -ErrorAction SilentlyContinue |
+        ForEach-Object { try { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction Stop } catch { } }
+
+    # Restore the environment exactly: never leave a test hook behind.
+    foreach ($entry in @(
+        @{ Name = 'ISAAC_MODSYNC_TEST_ISAAC_ROOT'; Value = $oldTestRoot },
+        @{ Name = 'ISAAC_MODSYNC_NO_LAUNCH'; Value = $oldNoLaunch },
+        @{ Name = 'ISAAC_MODSYNC_TEST_REPENTOGON_ZIP'; Value = $oldTestZip },
+        @{ Name = 'ISAAC_MODSYNC_LOG_PATH'; Value = $oldLogPath }
+    )) {
+        if ($null -eq $entry.Value -or $entry.Value -eq '') {
+            Remove-Item -Path ("Env:" + $entry.Name) -ErrorAction SilentlyContinue
+        } else {
+            Set-Item -Path ("Env:" + $entry.Name) -Value $entry.Value
+        }
+    }
     $env:LOCALAPPDATA = $oldLocal
     $env:APPDATA = $oldAppData
-    $env:ISAAC_MODSYNC_TEST_ISAAC_ROOT = $oldTestRoot
-    $env:ISAAC_MODSYNC_NO_LAUNCH = $oldNoLaunch
 }

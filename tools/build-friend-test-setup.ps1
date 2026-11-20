@@ -23,7 +23,7 @@ $sessionSource = Join-Path $PSScriptRoot 'Run-TempModProfile.ps1'
 $resyncSource = Join-Path $PSScriptRoot 'Resync-ProfileAndSaveData.ps1'
 $bridgeSource = Join-Path $repo 'tool\SteamModProfileBridge.cpp'
 $versionSource = Join-Path $repo 'VERSION'
-$patchedDllSource = Join-Path $repo 'artifacts-v0.0.10\zhlREPENTOGON.dll'
+$patchedDllSource = Join-Path $repo 'artifacts-v0.0.11\zhlREPENTOGON.dll'
 $installScriptSource = Join-Path $PSScriptRoot 'Install-ModSyncPatch.ps1'
 
 $version = '0.0.6'
