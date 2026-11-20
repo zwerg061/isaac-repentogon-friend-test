@@ -54,6 +54,61 @@ function Get-Sha256([string]$Path) {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
 }
 
+function Stop-GameProcesses {
+    # A running game or its launcher holds zhlREPENTOGON.dll open. Stop them
+    # before any file is replaced so Windows cannot deny the write.
+    foreach ($name in @('isaac-ng', 'REPENTOGONLauncher')) {
+        $running = @(Get-Process -Name $name -ErrorAction SilentlyContinue)
+        foreach ($process in $running) {
+            try {
+                Stop-Process -Id $process.Id -Force -ErrorAction Stop
+                Write-Log "$name (PID $($process.Id)) beendet."
+            } catch {
+                Write-Log "$name (PID $($process.Id)) konnte nicht beendet werden: $($_.Exception.Message)"
+            }
+        }
+    }
+}
+
+function Clear-ReadOnly([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return }
+    try {
+        $attributes = [IO.File]::GetAttributes($Path)
+        if (($attributes -band [IO.FileAttributes]::ReadOnly) -ne 0) {
+            [IO.File]::SetAttributes($Path, ($attributes -band (-bnot [IO.FileAttributes]::ReadOnly)))
+            Write-Log "ReadOnly entfernt: $Path"
+        }
+    } catch {
+        Write-Log "ReadOnly konnte nicht entfernt werden: $Path - $($_.Exception.Message)"
+    }
+}
+
+function Invoke-WithRetry([scriptblock]$Action, [string]$Description) {
+    # Defender/Sophos can hold a freshly written DLL for a few hundred ms.
+    for ($attempt = 1; $attempt -le 5; $attempt++) {
+        try {
+            & $Action
+            return
+        } catch {
+            if ($attempt -eq 5) {
+                throw "FEHLER nach 5 Versuchen bei $Description : $($_.Exception.Message)"
+            }
+            Write-Log "Retry $attempt/5 bei $Description : $($_.Exception.Message)"
+            Start-Sleep -Milliseconds 250
+        }
+    }
+}
+
+function Copy-FileWithRetry([string]$Source, [string]$Destination) {
+    Invoke-WithRetry {
+        Clear-ReadOnly $Destination
+        Copy-Item -LiteralPath $Source -Destination $Destination -Force -ErrorAction Stop
+        if ((Get-Sha256 $Destination) -ne (Get-Sha256 $Source)) {
+            throw "Hash-Mismatch nach dem Kopieren: $Destination"
+        }
+    } "Kopieren nach $Destination"
+}
+
 function Get-NormalizedPath([string]$Path) {
     $full = [IO.Path]::GetFullPath($Path)
     $root = [IO.Path]::GetPathRoot($full)
@@ -118,6 +173,7 @@ function Test-RepentogonInstalled([string]$Root) {
 function Save-State($State) {
     $dir = Split-Path -Parent $script:StatePath
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    Clear-ReadOnly $script:StatePath
     [IO.File]::WriteAllText($script:StatePath, ($State | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
 }
 
@@ -141,14 +197,23 @@ function Get-SafeZipPath([string]$Name) {
 }
 
 function Install-Repentogon([string]$Root) {
-    Write-Log 'REPENTOGON fehlt - lade offizielles Release ...'
-    $ProgressPreference = 'SilentlyContinue'
-    $release = Invoke-RestMethod -Uri $script:RepentogonApi -Headers @{ 'User-Agent' = 'isaac-mod-launcher' }
-    $asset = $release.assets | Where-Object { $_.name -eq 'REPENTOGON.zip' } | Select-Object -First 1
-    if (-not $asset) { $asset = $release.assets | Where-Object { $_.name -like '*.zip' } | Select-Object -First 1 }
-    if (-not $asset) { throw 'REPENTOGON-Release enthaelt kein ZIP.' }
-    $zipPath = Join-Path ([IO.Path]::GetTempPath()) ('isaac-rgon-' + [Guid]::NewGuid().ToString('N') + '.zip')
-    Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zipPath -UseBasicParsing
+    $fixtureZip = $env:ISAAC_MODSYNC_TEST_REPENTOGON_ZIP
+    $skipDownload = $false
+    if ($fixtureZip -and (Test-Path -LiteralPath $fixtureZip -PathType Leaf)) {
+        # Hidden automation hook: fixture tests provide a local REPENTOGON.zip.
+        $zipPath = $fixtureZip
+        $release = [pscustomobject]@{ tag_name = 'fixture' }
+        $skipDownload = $true
+    } else {
+        Write-Log 'REPENTOGON fehlt - lade offizielles Release ...'
+        $ProgressPreference = 'SilentlyContinue'
+        $release = Invoke-RestMethod -Uri $script:RepentogonApi -Headers @{ 'User-Agent' = 'isaac-mod-launcher' }
+        $asset = $release.assets | Where-Object { $_.name -eq 'REPENTOGON.zip' } | Select-Object -First 1
+        if (-not $asset) { $asset = $release.assets | Where-Object { $_.name -like '*.zip' } | Select-Object -First 1 }
+        if (-not $asset) { throw 'REPENTOGON-Release enthaelt kein ZIP.' }
+        $zipPath = Join-Path ([IO.Path]::GetTempPath()) ('isaac-rgon-' + [Guid]::NewGuid().ToString('N') + '.zip')
+        Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zipPath -UseBasicParsing
+    }
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $archive = [IO.Compression.ZipFile]::OpenRead($zipPath)
     $installed = @()
@@ -162,10 +227,17 @@ function Install-Repentogon([string]$Root) {
             }
             $parent = Split-Path -Parent $relative
             if ($parent) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
-            [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $relative, $true)
+            $target = $relative
+            Invoke-WithRetry {
+                Clear-ReadOnly $target
+                [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $target, $true)
+            } "Entpacken von $target"
             $installed += ($relative.Substring($Root.Length).TrimStart('\'))
         }
-    } finally { $archive.Dispose(); Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue }
+    } finally {
+        $archive.Dispose()
+        if (-not $skipDownload) { Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue }
+    }
     if (-not (Test-RepentogonInstalled $Root)) { throw 'REPENTOGON-Installation nach dem Entpacken unvollstaendig.' }
     Write-Log "REPENTOGON $($release.tag_name) installiert."
     return ,$installed
@@ -294,6 +366,7 @@ function Remove-HelperMods([string]$Root) {
 
 function Invoke-Apply {
     $root = Get-NormalizedPath (Find-IsaacRoot $IsaacRoot)
+    Stop-GameProcesses
     $patched = if ($PatchedDll) { [IO.Path]::GetFullPath($PatchedDll) } else { Join-Path $ToolsRoot 'zhlREPENTOGON.dll' }
     if (-not (Test-Path -LiteralPath $patched -PathType Leaf)) { throw "Gepatchte DLL fehlt: $patched" }
     $patchedHash = Get-Sha256 $patched
@@ -304,13 +377,13 @@ function Invoke-Apply {
     $backup = "$dll.orig"
     $currentHash = Get-Sha256 $dll
     if (-not (Test-Path -LiteralPath $backup -PathType Leaf)) {
-        Copy-Item -LiteralPath $dll -Destination $backup -Force
+        Copy-FileWithRetry $dll $backup
         if ((Get-Sha256 $backup) -ne $currentHash) { throw 'Sicherung der Original-DLL fehlgeschlagen (Hash-Mismatch).' }
         Write-Log "Original-DLL gesichert: $backup"
     }
     $originalHash = Get-Sha256 $backup
     if ($currentHash -ne $patchedHash) {
-        Copy-Item -LiteralPath $patched -Destination $dll -Force
+        Copy-FileWithRetry $patched $dll
         if ((Get-Sha256 $dll) -ne $patchedHash) { throw 'Gepatchte DLL konnte nicht verifiziert werden.' }
     }
     $state = [ordered]@{
@@ -337,15 +410,17 @@ function Invoke-Apply {
 function Invoke-Uninstall {
     $state = Read-State
     $root = if ($state -and $state.isaac_root) { $state.isaac_root } else { try { Find-IsaacRoot $IsaacRoot } catch { $null } }
+    Stop-GameProcesses
     Stop-Companion
     if ($state -and $state.repentogon_installed_by_us -and $root) {
         # REPENTOGON war vorher nicht vorhanden: exakter Urzustand = keine RGON-Dateien.
         foreach ($relative in @($state.installed_files)) {
             if (-not $relative -or $relative -like 'save*.dat') { continue }
             $path = Join-Path $root $relative
-            if (Test-Path -LiteralPath $path -PathType Leaf) { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }
+            if (Test-Path -LiteralPath $path -PathType Leaf) { Clear-ReadOnly $path; Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }
         }
         if ($state.backup_path -and (Test-Path -LiteralPath $state.backup_path -PathType Leaf)) {
+            Clear-ReadOnly $state.backup_path
             Remove-Item -LiteralPath $state.backup_path -Force -ErrorAction SilentlyContinue
         }
         Write-Log 'Von uns installierte REPENTOGON-Dateien entfernt (Urzustand wiederhergestellt).'
@@ -355,9 +430,10 @@ function Invoke-Uninstall {
         $target = $state.dll_path
         $currentHash = if (Test-Path -LiteralPath $target -PathType Leaf) { Get-Sha256 $target } else { $null }
         if ($currentHash -ne $backupHash) {
-            Copy-Item -LiteralPath $state.backup_path -Destination $target -Force
+            Copy-FileWithRetry $state.backup_path $target
             if ((Get-Sha256 $target) -ne $backupHash) { throw 'Original-DLL konnte nicht wiederhergestellt werden.' }
         }
+        Clear-ReadOnly $state.backup_path
         Remove-Item -LiteralPath $state.backup_path -Force
         Write-Log 'Original-DLL exakt wiederhergestellt.'
     }

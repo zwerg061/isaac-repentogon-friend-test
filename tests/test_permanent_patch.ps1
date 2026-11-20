@@ -30,6 +30,9 @@ $patchedHash = (Get-FileHash -LiteralPath $patched -Algorithm SHA256).Hash
 
 $oldLocal = $env:LOCALAPPDATA
 $oldAppData = $env:APPDATA
+$oldTestRoot = $env:ISAAC_MODSYNC_TEST_ISAAC_ROOT
+$oldTestZip = $env:ISAAC_MODSYNC_TEST_REPENTOGON_ZIP
+$oldNoLaunch = $env:ISAAC_MODSYNC_NO_LAUNCH
 $env:LOCALAPPDATA = Join-Path $fixture 'localappdata'
 $env:APPDATA = Join-Path $fixture 'appdata'
 
@@ -98,9 +101,66 @@ try {
     if (Test-Path -LiteralPath $addedLoader) { throw 'REPENTOGON loader installed by us was not removed.' }
     Write-Output 'PASS: uninstall removes a REPENTOGON installation created by us'
 
+    # 7. ReadOnly target + running isaac-ng: extraction and copy must survive.
+    Add-Type -AssemblyName System.IO.Compression
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $fixtureZip = Join-Path $fixture 'REPENTOGON-fixture.zip'
+    $officialDllBytes = [Text.Encoding]::ASCII.GetBytes('OFFICIAL-REPENTOGON-DLL-FOR-EXTRACT')
+    $zipFileStream = [IO.File]::Open($fixtureZip, [IO.FileMode]::Create)
+    $zip = [IO.Compression.ZipArchive]::new($zipFileStream, [IO.Compression.ZipArchiveMode]::Create)
+    $entries = [ordered]@{
+        'zhlREPENTOGON.dll' = $officialDllBytes
+        'zhlLoader.dll' = [Text.Encoding]::ASCII.GetBytes('loader')
+        'libzhl.dll' = [Text.Encoding]::ASCII.GetBytes('libzhl')
+        'resources/scripts/main_ex.lua' = [Text.Encoding]::ASCII.GetBytes('lua')
+    }
+    foreach ($name in $entries.Keys) {
+        $entry = $zip.CreateEntry($name)
+        $stream = $entry.Open()
+        $data = $entries[$name]
+        $stream.Write($data, 0, $data.Length)
+        $stream.Dispose()
+    }
+    $zip.Dispose()
+    $zipFileStream.Dispose()
+
+    $lockedRoot = Join-Path $fixture 'locked-isaac'
+    New-Item -ItemType Directory -Force -Path (Join-Path $lockedRoot 'resources\scripts') | Out-Null
+    [IO.File]::WriteAllBytes((Join-Path $lockedRoot 'isaac-ng.exe'), [Text.Encoding]::ASCII.GetBytes('fake'))
+    $lockedDll = Join-Path $lockedRoot 'zhlREPENTOGON.dll'
+    [IO.File]::WriteAllBytes($lockedDll, [Text.Encoding]::ASCII.GetBytes('STALE-READONLY-DLL'))
+    Set-ItemProperty -LiteralPath $lockedDll -Name IsReadOnly -Value $true
+    # Verify Stop-GameProcesses with mocked cmdlets (no real game process).
+    . $scriptPath -Action Status -Quiet | Out-Null
+    $script:stoppedPids = @()
+    function Get-Process { param([string]$Name) if ($Name -in @('isaac-ng', 'REPENTOGONLauncher')) { return [pscustomobject]@{ Id = 4242; ProcessName = $Name } } }
+    function Stop-Process { param([int]$Id, [switch]$Force, [object]$ErrorAction) $script:stoppedPids += $Id }
+    Stop-GameProcesses
+    Remove-Item function:Get-Process -ErrorAction SilentlyContinue
+    Remove-Item function:Stop-Process -ErrorAction SilentlyContinue
+    if (($script:stoppedPids | Select-Object -Unique).Count -ne 1 -or $script:stoppedPids.Count -ne 2) {
+        throw 'Stop-GameProcesses hat nicht beide Prozessnamen gestoppt.'
+    }
+    try {
+        $env:ISAAC_MODSYNC_TEST_ISAAC_ROOT = $lockedRoot
+        $env:ISAAC_MODSYNC_TEST_REPENTOGON_ZIP = $fixtureZip
+        $env:ISAAC_MODSYNC_NO_LAUNCH = '1'
+        & $scriptPath -Action Apply -ToolsRoot $tools -PatchedDll $patched -Quiet | Out-Null
+        if ((Get-Hash $lockedDll) -ne $patchedHash) { throw 'Apply nach ReadOnly-Konflikt hat die gepatchte DLL nicht installiert.' }
+        $attrs = [IO.File]::GetAttributes($lockedDll)
+        if (($attrs -band [IO.FileAttributes]::ReadOnly) -ne 0) { throw 'ReadOnly-Attribut der Ziel-DLL wurde nicht entfernt.' }
+        $backupHash = (Get-Hash "$lockedDll.orig")
+        $expectedOfficial = (Get-FileHash -InputStream ([IO.MemoryStream]::new($officialDllBytes)) -Algorithm SHA256).Hash
+        if ($backupHash -ne $expectedOfficial) { throw 'Original-DLL aus dem Zip wurde nicht korrekt gesichert.' }
+        Write-Output 'PASS: ReadOnly-Ziel wird sicher überschrieben; Game-Prozesse werden gestoppt'
+    } finally { }
+
     Write-Output 'ALL permanent-patch cycle tests passed.'
 } finally {
     $env:LOCALAPPDATA = $oldLocal
     $env:APPDATA = $oldAppData
+    $env:ISAAC_MODSYNC_TEST_ISAAC_ROOT = $oldTestRoot
+    $env:ISAAC_MODSYNC_TEST_REPENTOGON_ZIP = $oldTestZip
+    $env:ISAAC_MODSYNC_NO_LAUNCH = $oldNoLaunch
     if (Test-Path -LiteralPath $fixture) { Remove-Item -LiteralPath $fixture -Recurse -Force -ErrorAction SilentlyContinue }
 }

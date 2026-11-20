@@ -2,7 +2,7 @@
 # Clicks real Win32 buttons with BM_CLICK - no screenshots, no real game files.
 $ErrorActionPreference = 'Stop'
 
-$setup = 'G:\Coode\the binding of isaac\multyplayer modet\sandbox\release-v0.0.1\artifacts-v0.0.9\Isaac-Freund-Test-Setup.exe'
+$setup = 'G:\Coode\the binding of isaac\multyplayer modet\sandbox\release-v0.0.1\artifacts-v0.0.10\Isaac-Freund-Test-Setup.exe'
 if (-not (Test-Path -LiteralPath $setup -PathType Leaf)) { throw "Setup fehlt: $setup" }
 
 if (-not ('SetupUi' -as [type])) {

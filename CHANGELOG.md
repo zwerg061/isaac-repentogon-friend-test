@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.0.10 - safe overwrite of locked / ReadOnly REPENTOGON files
+
+- `Install-ModSyncPatch.ps1` now stops running `isaac-ng.exe` and
+  `REPENTOGONLauncher.exe` processes before any extraction or copy.
+- `Clear-ReadOnly` removes the ReadOnly attribute from existing target files;
+  `Invoke-WithRetry` retries `ExtractToFile` and `Copy-Item` up to five times
+  with a 250 ms pause so Defender/Sophos can release a freshly written DLL.
+- All DLL copies are SHA-256 verified after the retry.
+- New fixture test covers a ReadOnly existing `zhlREPENTOGON.dll` plus mocked
+  game processes, including the exact original hash in the backup.
+
 ## 0.0.9 - robust one-click activation with real error reporting
 
 - "Patch aktivieren" now installs the embedded tools automatically when they
