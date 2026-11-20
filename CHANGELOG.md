@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.0.7 - patched REPENTOGON DLL applied transactionally on the real install
+
+- The setup now embeds the verified, patched `zhlREPENTOGON.dll` built from
+  `sandbox/live-reload-prototype/source` (online lobby unlock, in-lobby mod hot
+  reload, crash/desync fixes). SHA256: `79B85546FBEEAD4DE573C50577E699EAF97739992EF13D03F72D0882CA1F7D45`.
+- `Run-TempModProfile.ps1` accepts `-PatchedRepentogonDll <path>`. When supplied,
+  it requires REPENTOGON to be installed (DLL + core files + resources), stores
+  the original DLL, swaps in the patched DLL via two new journalled steps, and
+  restores the original on normal exit, `-RestoreOnly`, error rollback and
+  automatic crash recovery. Every step is SHA-256 verified before any file is
+  removed; a foreign/tampered DLL aborts the rollback instead of being deleted.
+- Atomic journal writes retry transient `ACCESS_DENIED`/`SHARING_VIOLATION`
+  (e.g. Defender scanning a freshly written DLL) instead of failing the launch.
+- The runner now accepts a real Steam layout (`<IsaacRoot>\isaac-ng.exe`) in
+  addition to the sandbox layout (`<IsaacRoot>\Repentogon\isaac-ng.exe`).
+- New fixture-only test `tests/test_repentogon_dll_swap.ps1` covers journal
+  rollback, exit restore, crash recovery and tamper protection. No real game or
+  Steam files are touched.
+- The `isaac-mod-launcher` passes `-PatchedRepentogonDll` automatically when a
+  modpack has online mod sync enabled and refuses to start when REPENTOGON or
+  the patched DLL is missing.
+
 ## 0.0.6 - closed friend test: P2P transfer and hot reload enabled
 
 - **Enabled for the closed friend test:** automatic Steam P2P profile transfer and

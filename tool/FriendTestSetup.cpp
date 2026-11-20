@@ -1,6 +1,7 @@
 // Self-contained installer for the experimental REPENTOGON friend-test tools.
-// It installs only local tools and documentation. It does not ship game files,
-// REPENTOGON binaries, mods, saves, or Steam credentials.
+// It installs local tools, documentation and the verified PATCHED
+// zhlREPENTOGON.dll artifact into its own tool folder. It never writes into the
+// game directory, and ships no game EXE, mods, saves or Steam credentials.
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -17,7 +18,8 @@
 enum { IDC_PATH = 1001, IDC_BROWSE, IDC_INSTALL, IDC_RUN_PATCHER, IDC_GUIDE, IDC_STATUS };
 enum {
     IDR_PATCHER = 101, IDR_GUIDE = 102, IDR_MODSYNC = 103, IDR_SESSION = 104,
-    IDR_STEAMBRIDGE = 105, IDR_APPID = 106, IDR_VERSION = 107, IDR_RESYNC = 108
+    IDR_STEAMBRIDGE = 105, IDR_APPID = 106, IDR_VERSION = 107, IDR_RESYNC = 108,
+    IDR_PATCHED_DLL = 109
 };
 
 static HINSTANCE g_instance = nullptr;
@@ -84,7 +86,8 @@ static void UpdateInstalledButtons() {
                         && Exists(Join(folder, L"modsync.py"))
                         && Exists(Join(folder, L"Run-TempModProfile.ps1"))
                         && Exists(Join(folder, L"SteamModProfileBridge.exe"))
-                        && Exists(Join(folder, L"steam_appid.txt"));
+                        && Exists(Join(folder, L"steam_appid.txt"))
+                        && Exists(Join(folder, L"zhlREPENTOGON.dll"));
     EnableWindow(g_run, installed);
     EnableWindow(g_guide, installed);
 }
@@ -126,8 +129,10 @@ static void Install(HWND owner) {
     const std::wstring appIdPath = Join(folder, L"steam_appid.txt");
     const std::wstring versionPath = Join(folder, L"VERSION");
     const std::wstring resyncPath = Join(folder, L"Resync-ProfileAndSaveData.ps1");
+    const std::wstring patchedDllPath = Join(folder, L"zhlREPENTOGON.dll");
     if (Exists(patcherPath) || Exists(guidePath) || Exists(modsyncPath) || Exists(sessionPath) ||
-        Exists(bridgePath) || Exists(appIdPath) || Exists(versionPath) || Exists(resyncPath)) {
+        Exists(bridgePath) || Exists(appIdPath) || Exists(versionPath) || Exists(resyncPath) ||
+        Exists(patchedDllPath)) {
         MessageBoxW(owner,
             L"Im ausgew\u00E4hlten Ordner gibt es bereits eine oder mehrere Zieldateien.\n"
             L"Es wird nichts \u00FCberschrieben. Bitte einen leeren Ordner w\u00E4hlen.",
@@ -151,7 +156,8 @@ static void Install(HWND owner) {
     const bool appIdOk = bridgeOk && WriteResource(IDR_APPID, appIdPath);
     const bool versionOk = appIdOk && WriteResource(IDR_VERSION, versionPath);
     const bool resyncOk = versionOk && WriteResource(IDR_RESYNC, resyncPath);
-    if (!resyncOk) {
+    const bool patchedDllOk = resyncOk && WriteResource(IDR_PATCHED_DLL, patchedDllPath);
+    if (!patchedDllOk) {
         if (patcherOk) DeleteFileW(patcherPath.c_str());
         if (guideOk) DeleteFileW(guidePath.c_str());
         if (modsyncOk) DeleteFileW(modsyncPath.c_str());
@@ -160,6 +166,7 @@ static void Install(HWND owner) {
         if (appIdOk) DeleteFileW(appIdPath.c_str());
         if (versionOk) DeleteFileW(versionPath.c_str());
         if (resyncOk) DeleteFileW(resyncPath.c_str());
+        if (patchedDllOk) DeleteFileW(patchedDllPath.c_str());
         SetStatus(L"Installation fehlgeschlagen; unvollst\u00E4ndige Datei wurde entfernt.");
         EnableWindow(g_install, TRUE);
         MessageBoxW(owner,
@@ -174,9 +181,10 @@ static void Install(HWND owner) {
     UpdateInstalledButtons();
     MessageBoxW(owner,
         L"Installation abgeschlossen.\n\n"
-        L"Patch.exe, Mod-Sync-Runner, Steam-P2P-Companion und Anleitung wurden installiert.\n"
-        L"Patch.exe sichert die vorhandenen Spiel-Dateien und bietet Zur\u00FCcksetzen an.\n\n"
-        L"Keine Spiel-EXE, REPENTOGON-Binaries, Workshop-Mods, Saves oder Steam-Zugangsdaten sind enthalten.",
+        L"Patch.exe, Mod-Sync-Runner, Steam-P2P-Companion, Anleitung und die gepatchte\n"
+        L"zhlREPENTOGON.dll wurden in diesem Werkzeugordner installiert.\n"
+        L"Der Runner sichert die Original-DLL und setzt sie beim Spielende zur\u00FCck.\n\n"
+        L"Keine Spiel-EXE, Workshop-Mods, Saves oder Steam-Zugangsdaten sind enthalten.",
         L"Fertig", MB_ICONINFORMATION);
 }
 

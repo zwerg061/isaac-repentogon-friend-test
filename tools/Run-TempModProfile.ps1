@@ -26,6 +26,7 @@ param(
     [string]$Python = 'py',
     [string]$SteamCmd,
     [string]$WorkshopCache,
+    [string]$PatchedRepentogonDll,
     [switch]$TrustProfile,
     [switch]$RestoreOnly,
     [switch]$HostMode,
@@ -171,14 +172,26 @@ function Read-SessionState {
 function Write-AtomicFile([string]$Path, [byte[]]$Bytes) {
     # Never write state in place: a torn write after a crash must be impossible.
     # Write to a sibling temp file, flush to disk, then atomically replace.
+    # Defender can briefly hold a freshly written REPENTOGON DLL (or a sibling
+    # file) open, so a transient ACCESS_DENIED/SHARING_VIOLATION is retried.
     $temp = $Path + '.tmp'
-    $stream = [IO.File]::Open($temp, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::None)
-    try { $stream.Write($Bytes, 0, $Bytes.Length); $stream.Flush($true) }
-    finally { $stream.Dispose() }
-    if (-not [ModSyncTempSessionNative]::MoveFileEx($temp, $Path, 0x9)) {
-        $code = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
-        throw "Atomares Schreiben fehlgeschlagen (Win32 $code): $Path"
+    for ($attempt = 0; $attempt -lt 6; $attempt++) {
+        $code = 0
+        try {
+            $stream = [IO.File]::Open($temp, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::None)
+            try { $stream.Write($Bytes, 0, $Bytes.Length); $stream.Flush($true) }
+            finally { $stream.Dispose() }
+            if ([ModSyncTempSessionNative]::MoveFileEx($temp, $Path, 0x9)) { return }
+            $code = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        } catch {
+            $code = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        }
+        if ($code -ne 5 -and $code -ne 32) {
+            throw "Atomares Schreiben fehlgeschlagen (Win32 $code): $Path"
+        }
+        Start-Sleep -Milliseconds 150
     }
+    throw "Atomares Schreiben fehlgeschlagen nach 6 Versuchen (Win32 $code): $Path"
 }
 
 function Write-SessionState($State, [switch]$CreateNew) {
@@ -219,6 +232,10 @@ function Add-JournalStep($State, [string]$Action, [string]$Undo) {
         data_path      = $State.data_path
         held_data_path = $State.held_data_path
         stage_data     = $State.stage_data
+        repentogon_dll_path = $State.repentogon_dll_path
+        repentogon_held_path = $State.repentogon_held_path
+        repentogon_original_sha256 = $State.repentogon_original_sha256
+        repentogon_patch_sha256 = $State.repentogon_patch_sha256
     }
     $journal.entries = $entries
     Write-SwapJournal $journal
@@ -266,6 +283,36 @@ function Invoke-JournalRollback {
                 if ((Test-Path -LiteralPath $entry.held_data_path) -and -not (Test-Path -LiteralPath $entry.data_path)) {
                     [IO.Directory]::Move($entry.held_data_path, $entry.data_path)
                     Write-Host "Journal-Rollback: Original-SaveData zurueckverschoben: $($entry.data_path)"
+                }
+            }
+            'remove-patched-repentogon-dll' {
+                $target = $entry.repentogon_dll_path
+                if ($target -and (Test-Path -LiteralPath $target -PathType Leaf)) {
+                    $actual = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash
+                    if ($actual -ne $entry.repentogon_patch_sha256) {
+                        throw "Sicherheitsabbruch: gepatchte DLL am Ziel hat unerwarteten Hash: $target"
+                    }
+                    Remove-Item -LiteralPath $target -Force
+                    Write-Host "Journal-Rollback: gepatchte DLL entfernt: $target"
+                }
+            }
+            'restore-original-repentogon-dll' {
+                $target = $entry.repentogon_dll_path
+                $held = $entry.repentogon_held_path
+                if ($held -and (Test-Path -LiteralPath $held -PathType Leaf)) {
+                    $actual = (Get-FileHash -LiteralPath $held -Algorithm SHA256).Hash
+                    if ($actual -ne $entry.repentogon_original_sha256) {
+                        throw "Sicherheitsabbruch: gesicherte Original-DLL hat unerwarteten Hash: $held"
+                    }
+                    if ($target -and (Test-Path -LiteralPath $target -PathType Leaf)) {
+                        $current = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash
+                        if ($current -ne $entry.repentogon_patch_sha256) {
+                            throw "Sicherheitsabbruch: Ziel-DLL wurde extern geaendert: $target"
+                        }
+                        Remove-Item -LiteralPath $target -Force
+                    }
+                    [IO.File]::Move($held, $target)
+                    Write-Host "Journal-Rollback: Original-DLL wiederhergestellt: $target"
                 }
             }
         }
@@ -449,6 +496,8 @@ function Invoke-RestoreOnly {
         Write-Host 'Keine offene Temp-Mod-Session; nichts zu tun.'
         return
     }
+    Invoke-JournalRollback
+    Restore-RepentogonDll $state
     Restore-OriginalMods $state $IsaacRoot
 }
 
@@ -465,16 +514,59 @@ function Invoke-SandboxHotReload {
     Write-Host "Sandbox-Hot-Reload: staged Mod-Set zuruecksetzen und neu einlesen: $stageMods" -ForegroundColor Cyan
 }
 
+function Get-RepentogonDllPath([string]$Root) {
+    # Real Steam installs keep REPENTOGON files in the game root; the isolated
+    # sandbox build keeps them in a "Repentogon" subfolder.
+    foreach ($candidate in @(
+        (Join-Path $Root 'zhlREPENTOGON.dll'),
+        (Join-Path $Root 'Repentogon\zhlREPENTOGON.dll')
+    )) {
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+    }
+    return $null
+}
+
+function Restore-RepentogonDll($State) {
+    if (-not $State -or -not $State.online_patch_active) { return }
+    $target = $State.repentogon_dll_path
+    $held = $State.repentogon_held_path
+    if (-not $target -or -not $held) { throw 'Online-Patch-Status unvollstaendig (DLL-Pfade fehlen).' }
+    if (Test-Path -LiteralPath $target -PathType Leaf) {
+        $current = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash
+        if ($current -eq $State.repentogon_original_sha256) {
+            # Der Journal-Rollback hat die DLL bereits zurueckgesetzt.
+            $State.online_patch_active = $false
+            if (Test-Path -LiteralPath $script:SessionStatePath) { Write-SessionState $State }
+            return
+        }
+        if ($current -ne $State.repentogon_patch_sha256) {
+            throw "Sicherheitsabbruch: Ziel-DLL wurde extern geaendert: $target"
+        }
+        Remove-Item -LiteralPath $target -Force
+    }
+    if (Test-Path -LiteralPath $held -PathType Leaf) {
+        $original = (Get-FileHash -LiteralPath $held -Algorithm SHA256).Hash
+        if ($original -ne $State.repentogon_original_sha256) {
+            throw "Sicherheitsabbruch: gesicherte Original-DLL hat unerwarteten Hash: $held"
+        }
+        [IO.File]::Move($held, $target)
+        Write-Host "Original-REPENTOGON-DLL wiederhergestellt: $target" -ForegroundColor Green
+    }
+    $State.online_patch_active = $false
+    if (Test-Path -LiteralPath $script:SessionStatePath) { Write-SessionState $State }
+}
+
 function Invoke-CrashRecovery([string]$ExpectedIsaacRoot) {
     $previousState = Read-SessionState
     if (-not $previousState) { return $false }
     if (Get-RunningIsaac) {
         throw 'Vorherige Temp-Mod-Session ist noch offen und Isaac laeuft. Erst das Spiel schliessen; der naechste Start rollt automatisch zurueck.'
     }
-    Write-Host 'Crash-Rollback: verwaiste Temp-Mod-Session erkannt; Original-Mods werden automatisch wiederhergestellt.' -ForegroundColor Yellow
+    Write-Host 'Crash-Rollback: verwaiste Temp-Mod-Session erkannt; Originale werden automatisch wiederhergestellt.' -ForegroundColor Yellow
     Invoke-JournalRollback
+    Restore-RepentogonDll $previousState
     Restore-OriginalMods $previousState $ExpectedIsaacRoot
-    Write-Host 'Crash-Rollback abgeschlossen: Original-Mods sind wieder aktiv.' -ForegroundColor Green
+    Write-Host 'Crash-Rollback abgeschlossen: Original-Mods und REPENTOGON-DLL sind wieder aktiv.' -ForegroundColor Green
     return $true
 }
 # --- SWAP LIBRARY END ---
@@ -504,12 +596,48 @@ if (Test-Path -LiteralPath $script:SwapJournalPath) {
 
 $profilePath = if ($Profile) { [IO.Path]::GetFullPath($Profile) } else { $null }
 $modsPath = Join-Path $isaacRoot 'mods'
-$gameExe = Join-Path $isaacRoot 'Repentogon\isaac-ng.exe'
+$gameExe = Join-Path $isaacRoot 'isaac-ng.exe'
+if (-not (Test-Path -LiteralPath $gameExe -PathType Leaf)) {
+    $gameExe = Join-Path $isaacRoot 'Repentogon\isaac-ng.exe'
+}
 $launcherPath = [IO.Path]::GetFullPath($Launcher)
 $modsyncPath = Join-Path $PSScriptRoot 'modsync.py'
 $bridgePath = Join-Path $PSScriptRoot 'SteamModProfileBridge.exe'
 $resyncScriptPath = Join-Path $PSScriptRoot 'Resync-ProfileAndSaveData.ps1'
 $appIdFile = Join-Path $PSScriptRoot 'steam_appid.txt'
+
+# Transaktionaler REPENTOGON-Online-Patch: Nur wenn eine gepatchte DLL explizit
+# uebergeben wurde. Original und Core-Dateien MUESSEN vorhanden sein, sonst
+# wird nichts geaendert und der Start abgebrochen.
+$onlinePatchEnabled = $false
+$patchedSource = $null
+$repentogonDllPath = $null
+$repentogonHeldPath = $null
+$repentogonOriginalHash = $null
+$repentogonPatchHash = $null
+if ($PatchedRepentogonDll) {
+    $patchedSource = [IO.Path]::GetFullPath($PatchedRepentogonDll)
+    if (-not (Test-Path -LiteralPath $patchedSource -PathType Leaf)) { throw "Gepatchte REPENTOGON-DLL fehlt: $patchedSource" }
+    $repentogonDllPath = Get-RepentogonDllPath $isaacRoot
+    if (-not $repentogonDllPath) {
+        throw "REPENTOGON ist nicht installiert (zhlREPENTOGON.dll fehlt): $isaacRoot"
+    }
+    $repentogonFolder = Split-Path -Parent $repentogonDllPath
+    foreach ($required in @('zhlLoader.dll', 'libzhl.dll')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $repentogonFolder $required) -PathType Leaf)) {
+            throw "REPENTOGON-Core-Datei fehlt: $required"
+        }
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $repentogonFolder 'resources\scripts\main_ex.lua') -PathType Leaf)) {
+        throw 'REPENTOGON-Resources fehlen (resources\scripts\main_ex.lua).'
+    }
+    $repentogonOriginalHash = (Get-FileHash -LiteralPath $repentogonDllPath -Algorithm SHA256).Hash
+    $repentogonPatchHash = (Get-FileHash -LiteralPath $patchedSource -Algorithm SHA256).Hash
+    if ($repentogonOriginalHash -eq $repentogonPatchHash) {
+        Write-Host 'Hinweis: Ziel-DLL ist bereits die gepatchte Version.' -ForegroundColor Yellow
+    }
+    $onlinePatchEnabled = $true
+}
 
 if ($HostMode -and $WaitForHostProfile) { throw 'HostMode und WaitForHostProfile sind gegenseitig ausschliessend.' }
 if ($HostMode -and $Profile) { throw 'HostMode erstellt das Profil lokal; --Profile nicht angeben.' }
@@ -573,6 +701,10 @@ if (-not $steamCmdPath) {
     }
 }
 $sessionId = [Guid]::NewGuid().ToString('N')
+if ($onlinePatchEnabled) {
+    $repentogonHeldPath = $repentogonDllPath + '.modsync-original-' + $sessionId
+    if (Test-Path -LiteralPath $repentogonHeldPath) { throw "Original-DLL-Haltepfad existiert bereits: $repentogonHeldPath" }
+}
 $sessionRoot = Join-Path $script:TempSessionsRoot $sessionId
 $stageMods = Join-Path $sessionRoot 'mods'
 $temporaryManifest = $null
@@ -730,6 +862,11 @@ $state = [ordered]@{
     data_path = $script:DataRootPath
     held_data_path = $heldDataPath
     stage_data = $stageData
+    online_patch_active = $false
+    repentogon_dll_path = $repentogonDllPath
+    repentogon_held_path = $repentogonHeldPath
+    repentogon_original_sha256 = $repentogonOriginalHash
+    repentogon_patch_sha256 = $repentogonPatchHash
     bridge_pid = 0
     phase = 'prepared'
 }
@@ -745,6 +882,24 @@ catch { Write-Warning "Lobby-Menue-Hinweis nicht verfuegbar: $($_.Exception.Mess
 $previousSessionEnvironment = [Environment]::GetEnvironmentVariable('ISAAC_MODSYNC_SESSION', 'Process')
 try {
     Initialize-SwapJournal $sessionId
+
+    if ($onlinePatchEnabled) {
+        Add-JournalStep $state 'backup-repentogon-dll' 'restore-original-repentogon-dll'
+        [IO.File]::Move($repentogonDllPath, $repentogonHeldPath)
+        $state.phase = 'repentogon-dll-held'
+        Write-SessionState $state
+        Complete-JournalStep
+
+        Add-JournalStep $state 'swap-repentogon-dll' 'remove-patched-repentogon-dll'
+        Copy-Item -LiteralPath $patchedSource -Destination $repentogonDllPath -Force
+        if ((Get-FileHash -LiteralPath $repentogonDllPath -Algorithm SHA256).Hash -ne $repentogonPatchHash) {
+            throw 'Gepatchte REPENTOGON-DLL konnte nach dem Kopieren nicht verifiziert werden.'
+        }
+        $state.online_patch_active = $true
+        Write-SessionState $state
+        Complete-JournalStep
+        Write-Host "REPENTOGON-Online-Patch aktiv: $repentogonDllPath" -ForegroundColor Magenta
+    }
 
     Add-JournalStep $state 'move-mods-to-held' 'move-held-to-mods'
     [IO.Directory]::Move($modsPath, $heldPath)
@@ -903,7 +1058,10 @@ LaunchMode = 0
         Write-Warning 'Isaac laeuft noch; Temp-Junction bleibt aktiv. Isaac schliessen und danach -RestoreOnly ausfuehren.'
     } else {
         $currentState = Read-SessionState
-        if ($currentState) { Restore-OriginalMods $currentState $isaacRoot }
+        if ($currentState) {
+            Restore-RepentogonDll $currentState
+            Restore-OriginalMods $currentState $isaacRoot
+        }
         Remove-Item -LiteralPath $script:SwapJournalPath -Force -ErrorAction SilentlyContinue
     }
     Release-SwapLock

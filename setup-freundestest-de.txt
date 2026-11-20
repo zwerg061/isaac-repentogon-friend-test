@@ -1,5 +1,5 @@
 ISAAC REPENTOGON – FREUND-TEST (EXPERIMENTELL)
-Version 0.0.6 (experimentell)
+Version 0.0.7 (experimentell)
 ================================================
 
 WICHTIG: FREIGABE NUR FUER DEN GESCHLOSSENEN FREUNDESTEST.
@@ -12,12 +12,22 @@ jeglichem Versand, Download oder Aenderung ab.
 Ein echter Zwei-Spieler-Nachweis steht weiterhin aus: Der Test ist bewusst auf
 eine vertraute Person und einen isolierten Spielstand begrenzt.
 
+NEU in v0.0.7: Das Setup enthaelt die verifizierte, gepatchte
+`zhlREPENTOGON.dll` (Online-Lobby-Unlock, Hot-Reload, Crash-/Desync-Fixes).
+Der Runner sichert die vorhandene Original-DLL beim Start, setzt die gepatchte
+DLL transaktional ein (Journal + Hash-Pruefung) und stellt das Original beim
+Spielende sowie bei Crash-Recovery garantiert wieder her. Ohne
+`-PatchedRepentogonDll` wird das Spiel nicht veraendert. Spielstaende bleiben
+immer unangetastet.
+
 Zweck
 -----
-Der Setup-EXE installiert nur `Patch.exe`, `modsync.py` und diese Anleitung.
-Er enthält keine Spiel-/REPENTOGON-Dateien, Mods, Spielstände, Steam-
-Anmeldedaten oder Tokens. Jeder Spieler braucht eine eigene, legitime
-Steam-Installation.
+Der Setup-EXE installiert `Patch.exe`, `modsync.py`, den Runner, den
+Steam-P2P-Companion, diese Anleitung und die gepatchte `zhlREPENTOGON.dll`
+ausschließlich in den gewählten Werkzeugordner. Er installiert nichts direkt
+in das Spielverzeichnis und enthält keine Spiel-EXE, keine Mods, keine
+Spielstände, keine Steam-Anmeldedaten oder Tokens. Jeder Spieler braucht eine
+eigene, legitime Steam-Installation sowie ein installiertes REPENTOGON.
 
 Was `Patch.exe` macht
 ---------------------
@@ -70,7 +80,8 @@ Vor dem Start
    verschicken.
 2. Im Setup-Ordner `Patch.exe` starten, Installation prüfen lassen und
    "Patch anwenden" wählen. Danach steht dort "Online-Menü-Fix aktiv".
-3. Ablauf (v0.0.6 aktiv): Beide Spieler brauchen Python 3 und Setup **v0.0.6**.
+3. Ablauf (v0.0.6-Protokoll aktiv): Beide Spieler brauchen Python 3 und Setup
+   **v0.0.7**. Das Protokoll bleibt bei 0.0.6, damit beide Seiten kompatibel sind.
    Es wird keine `host-profile.json` und kein Mod-Archiv manuell verschickt. Der
    Host-Runner erstellt das Profil aus seinem letzten Spiel-Log und uebertraegt
    es automatisch ueber Steam-P2P. Der Host muss Isaac zuvor einmal mit dem
@@ -82,7 +93,8 @@ Vor dem Start
 
    ```powershell
    powershell -NoProfile -ExecutionPolicy Bypass -File .\Run-TempModProfile.ps1 `
-     -HostMode -IsaacRoot "<Isaac-Installationsordner>"
+     -HostMode -IsaacRoot "<Isaac-Installationsordner>" `
+     -PatchedRepentogonDll ".\zhlREPENTOGON.dll"
    ```
 
    Der Freund startet den Warte-Modus ebenfalls bei geschlossenem Isaac:
@@ -90,7 +102,8 @@ Vor dem Start
    ```powershell
    powershell -NoProfile -ExecutionPolicy Bypass -File .\Run-TempModProfile.ps1 `
      -WaitForHostProfile -IsaacRoot "<Isaac-Installationsordner>" `
-     -SteamCmd "<SteamCMD-Ordner>\steamcmd.exe"
+     -SteamCmd "<SteamCMD-Ordner>\steamcmd.exe" `
+     -PatchedRepentogonDll ".\zhlREPENTOGON.dll"
    ```
 
    Der Freund wartet auf Steam-P2P und empfaengt das Profil nach dem

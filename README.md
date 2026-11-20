@@ -1,8 +1,14 @@
 # Isaac REPENTOGON Friend Test
 
-**Version:** 0.0.6 (experimental)<br>
-**Status:** menu fix verified in a sandbox; connection not yet verified with a
-second player.
+**Version:** 0.0.7 (experimental)<br>
+**Status:** menu fix and patched REPENTOGON DLL verified in a sandbox; connection
+not yet verified with a second player.
+
+> **v0.0.7 adds the transactional DLL swap.** The setup embeds the verified
+> patched `zhlREPENTOGON.dll`. With `-PatchedRepentogonDll`, the runner backs up
+> the original DLL, applies the patch journally and restores the original on
+> exit, `-RestoreOnly`, rollback and crash recovery. REPENTOGON must already be
+> installed; without the switch nothing in the game directory is changed.
 
 > **Closed friend test v0.0.6 — automatic transfer enabled.** A two-sided version
 > check gates `-HostMode` and `-WaitForHostProfile`: both players must use v0.0.6

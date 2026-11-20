@@ -1,6 +1,7 @@
 # Build outputs and user-local game data
 artifacts/
 artifacts-v0.0.6/
+artifacts-v0.0.7/
 dist/
 sandbox/
 backup/

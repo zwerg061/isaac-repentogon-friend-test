@@ -23,6 +23,7 @@ $sessionSource = Join-Path $PSScriptRoot 'Run-TempModProfile.ps1'
 $resyncSource = Join-Path $PSScriptRoot 'Resync-ProfileAndSaveData.ps1'
 $bridgeSource = Join-Path $repo 'tool\SteamModProfileBridge.cpp'
 $versionSource = Join-Path $repo 'VERSION'
+$patchedDllSource = Join-Path $repo 'artifacts-v0.0.7\zhlREPENTOGON.dll'
 
 $version = '0.0.6'
 if (Test-Path -LiteralPath $versionSource -PathType Leaf) {
@@ -42,6 +43,7 @@ if (-not (Test-Path -LiteralPath $sessionSource)) { throw "Temp-Mod-Session-Runn
 if (-not (Test-Path -LiteralPath $resyncSource)) { throw "Desync-Resync-Skript fehlt: $resyncSource" }
 if (-not (Test-Path -LiteralPath $bridgeSource)) { throw "Steam-P2P-Companion-Quelle fehlt: $bridgeSource" }
 if (-not (Test-Path -LiteralPath $versionSource)) { throw "VERSION fehlt: $versionSource" }
+if (-not (Test-Path -LiteralPath $patchedDllSource -PathType Leaf)) { throw "Gepatchte REPENTOGON-DLL fehlt: $patchedDllSource" }
 if ((Test-Path -LiteralPath $setupExe) -and -not $Force) {
     throw "Ausgabedatei existiert bereits; wird nicht Ã¼berschrieben: $setupExe (mit -Force ausdrÃ¼cklich ersetzen)"
 }
@@ -58,6 +60,7 @@ Copy-Item -LiteralPath $modsyncSource -Destination (Join-Path $stage 'modsync.py
 Copy-Item -LiteralPath $sessionSource -Destination (Join-Path $stage 'Run-TempModProfile.ps1')
 Copy-Item -LiteralPath $resyncSource -Destination (Join-Path $stage 'Resync-ProfileAndSaveData.ps1')
 Copy-Item -LiteralPath $versionSource -Destination (Join-Path $stage 'VERSION')
+Copy-Item -LiteralPath $patchedDllSource -Destination (Join-Path $stage 'zhlREPENTOGON.dll')
 $bridgeExe = Join-Path $stage 'SteamModProfileBridge.exe'
 $bridgeObj = Join-Path $stage 'SteamModProfileBridge.obj'
 $bridgeRc = Join-Path $stage 'SteamModProfileBridge.rc'
@@ -126,7 +129,7 @@ $appIdFile = Join-Path $stage 'steam_appid.txt'
 [IO.File]::WriteAllText($appIdFile, "250900`r`n", [Text.Encoding]::ASCII)
 
 $resourceFile = Join-Path $stage 'FriendTestSetup.rc'
-@'
+@"
 #include <windows.h>
 #define IDR_PATCHER 101
 #define IDR_GUIDE 102
@@ -136,6 +139,7 @@ $resourceFile = Join-Path $stage 'FriendTestSetup.rc'
 #define IDR_APPID 106
 #define IDR_VERSION 107
 #define IDR_RESYNC 108
+#define IDR_PATCHED_DLL 109
 IDR_PATCHER RCDATA "Patch.exe"
 IDR_GUIDE RCDATA "setup-freundestest-de.txt"
 IDR_MODSYNC RCDATA "modsync.py"
@@ -144,10 +148,11 @@ IDR_STEAMBRIDGE RCDATA "SteamModProfileBridge.exe"
 IDR_APPID RCDATA "steam_appid.txt"
 IDR_VERSION RCDATA "VERSION"
 IDR_RESYNC RCDATA "Resync-ProfileAndSaveData.ps1"
+IDR_PATCHED_DLL RCDATA "zhlREPENTOGON.dll"
 
 VS_VERSION_INFO VERSIONINFO
-  FILEVERSION 0,0,6,0
-  PRODUCTVERSION 0,0,6,0
+  FILEVERSION $versionComma,0
+  PRODUCTVERSION $versionComma,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0
  FILEOS 0x40004L
@@ -160,11 +165,11 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Experimental community tool\0"
             VALUE "FileDescription", "Isaac REPENTOGON Friend Test Setup\0"
-            VALUE "FileVersion", "0.0.6.0\0"
+            VALUE "FileVersion", "$version.0\0"
             VALUE "InternalName", "Isaac-Freund-Test-Setup\0"
             VALUE "OriginalFilename", "Isaac-Freund-Test-Setup.exe\0"
             VALUE "ProductName", "Isaac REPENTOGON Friend Test\0"
-            VALUE "ProductVersion", "0.0.6\0"
+            VALUE "ProductVersion", "$version\0"
         END
     END
     BLOCK "VarFileInfo"
@@ -172,7 +177,7 @@ BEGIN
         VALUE "Translation", 0x409, 1200
     END
 END
-'@ | Set-Content -LiteralPath $resourceFile -Encoding ASCII
+"@ | Set-Content -LiteralPath $resourceFile -Encoding ASCII
 
 $cmd = @(
     "call `"$vcvars`" >nul",
@@ -246,7 +251,8 @@ try {
         @(105, 'SteamModProfileBridge.exe'),
         @(106, 'steam_appid.txt'),
         @(107, 'VERSION'),
-        @(108, 'Resync-ProfileAndSaveData.ps1')
+        @(108, 'Resync-ProfileAndSaveData.ps1'),
+        @(109, 'zhlREPENTOGON.dll')
     )
     foreach ($item in $payload) {
         $embedded = Read-EmbeddedResource $module 10 ([int]$item[0])
@@ -265,4 +271,4 @@ $hash = (Get-FileHash -LiteralPath $setupExe -Algorithm SHA256).Hash
 Write-Host "Fertig: $($setup.FullName) ($([Math]::Round($setup.Length / 1KB)) KB)"
 Write-Host "SHA256 (Setup): $hash"
 Write-Host "Version: $version | asInvoker: verifiziert | eingebettete Hashes: verifiziert"
-Write-Host 'Paketinhalt: Patch.exe + modsync.py + Temp-Runner + Resync-Skript + Steam-P2P-Companion/Desync-Assistant + VERSION. Keine Isaac-/REPENTOGON-Binaries, Steam API DLLs oder Mods eingebettet.'
+Write-Host 'Paketinhalt: Patch.exe + modsync.py + Temp-Runner + Resync-Skript + Steam-P2P-Companion/Desync-Assistant + VERSION + verifizierte gepatchte zhlREPENTOGON.dll. Keine Spiel-EXE, keine Mods, keine Saves, keine Steam API DLLs.'
