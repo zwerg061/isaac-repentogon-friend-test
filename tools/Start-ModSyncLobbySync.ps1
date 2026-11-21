@@ -7,7 +7,7 @@ param(
     [Parameter(Mandatory = $true)][string]$ToolsRoot,
     [Parameter(Mandatory = $true)][string]$IsaacRoot,
     [int]$GamePid = 0,
-    [string]$Version = '0.0.18',
+    [string]$Version = '0.0.19',
     [int]$TimeoutSeconds = 900
 )
 
@@ -32,7 +32,7 @@ function Write-LobbyProgressJson([string]$Status, [int]$Percent, [string]$ModNam
         $target = Join-Path $dir 'lobby_progress.json'
         $temp = $target + '.tmp'
         $visibleUntil = [DateTime]::UtcNow.AddSeconds(4).Ticks
-        $payload = @{ status = $Status; percent = $Percent; mod = $ModName; visibleUntil = $visibleUntil; in_lobby = $true } | ConvertTo-Json -Compress
+        $payload = @{ status = $Status; percent = $Percent; mod = $ModName; visibleUntil = $visibleUntil; in_lobby = $true; done = ($Percent -ge 100) } | ConvertTo-Json -Compress
         [IO.File]::WriteAllText($temp, $payload, [Text.UTF8Encoding]::new($false))
         Move-Item -LiteralPath $temp -Destination $target -Force
         Write-SyncLog "PROGRESS $Percent% :: $Status :: $ModName"
@@ -76,15 +76,22 @@ function Wait-Lobby {
                 $position = $stream.Position
                 $reader.Dispose()
                 $lines = @($text -split "`n")
+                # A host creating a lobby ALSO logs "Successfully joined lobby <same id>"
+                # right after "created". Treat "created" as authoritative for that id
+                # and never let its own join line downgrade the role to client.
+                $created = @{}
                 $lastLobby = $null
                 $leftAfter = $false
                 foreach ($line in $lines) {
                     if ($line -match 'Successfully created lobby\s+(\d+)') {
+                        $created[$Matches[1]] = $true
                         $lastLobby = @{ Role = 'host'; Id = $Matches[1] }
                         $leftAfter = $false
                     }
                     if ($line -match 'Successfully joined lobby\s+(\d+)') {
-                        $lastLobby = @{ Role = 'client'; Id = $Matches[1] }
+                        $lobbyId = $Matches[1]
+                        $role = if ($created.ContainsKey($lobbyId)) { 'host' } else { 'client' }
+                        $lastLobby = @{ Role = $role; Id = $lobbyId }
                         $leftAfter = $false
                     }
                     if ($lastLobby -and ($line -match 'Leaving current lobby' -or $line -match 'Isaac has shut down')) {

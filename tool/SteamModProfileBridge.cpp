@@ -36,7 +36,10 @@ constexpr char kReadyPrefix[] = "MODSYNC-READY-V1|";
 constexpr char kAckPrefix[] = "MODSYNC-ACK-V1|";
 constexpr char kProfilePrefix[] = "MODSYNC-PROFILE-V1|";
 // Must stay in sync with Runner VERSION / modsync TOOL_VERSION / setup resource.
-constexpr char kToolVersion[] = "0.0.6";
+// Bumped from 0.0.6: the watcher passes the setup version via
+// --expected-version. A stale constant made Parse() reject every handshake and
+// steam-bridge.ready never appeared.
+constexpr char kToolVersion[] = "0.0.19";
 constexpr int kDialogDesyncAssistant = 200;
 constexpr int kIdcDesyncReason = 1001;
 constexpr int kIdcDesyncDetail = 1002;
@@ -70,6 +73,8 @@ struct SteamApi {
     using LobbyOwnerFn = SteamId(__cdecl*)(void*, SteamId);
     using LobbyCountFn = int(__cdecl*)(void*, SteamId);
     using LobbyMemberFn = SteamId(__cdecl*)(void*, SteamId, int);
+    using SetLobbyDataFn = SteamBool(__cdecl*)(void*, SteamId, const char*, const char*);
+    using GetLobbyDataFn = const char*(__cdecl*)(void*, SteamId, const char*);
 
     VoidFn runCallbacks = nullptr;
     VoidFn shutdown = nullptr;
@@ -83,6 +88,8 @@ struct SteamApi {
     LobbyOwnerFn lobbyOwner = nullptr;
     LobbyCountFn lobbyCount = nullptr;
     LobbyMemberFn lobbyMember = nullptr;
+    SetLobbyDataFn setLobbyData = nullptr;
+    GetLobbyDataFn getLobbyData = nullptr;
 
     template <typename T>
     T Proc(const char* name) {
@@ -134,6 +141,9 @@ struct SteamApi {
         lobbyOwner = Proc<LobbyOwnerFn>("SteamAPI_ISteamMatchmaking_GetLobbyOwner");
         lobbyCount = Proc<LobbyCountFn>("SteamAPI_ISteamMatchmaking_GetNumLobbyMembers");
         lobbyMember = Proc<LobbyMemberFn>("SteamAPI_ISteamMatchmaking_GetLobbyMemberByIndex");
+        // Optional lobby-data fallback. Not all Steam API builds export it.
+        setLobbyData = reinterpret_cast<SetLobbyDataFn>(GetProcAddress(module, "SteamAPI_ISteamMatchmaking_SetLobbyData"));
+        getLobbyData = reinterpret_cast<GetLobbyDataFn>(GetProcAddress(module, "SteamAPI_ISteamMatchmaking_GetLobbyData"));
     }
 
     ~SteamApi() {
@@ -483,8 +493,56 @@ static int InspectLoop(const Options& options, SteamApi& steam, const GameHandle
     return 0;
 }
 
+// Chunked lobby-data fallback: P2P packets can be delayed by NAT/firewalls
+// while lobby data is replicated reliably by Steam to all members.
+constexpr size_t kProfileChunkBytes = 800;
+
+static void WriteProfileToLobbyData(const Options& options, SteamApi& steam, const std::string& profile) {
+    if (!steam.setLobbyData) return;
+    steam.Pump();
+    const size_t chunks = (profile.size() + kProfileChunkBytes - 1) / kProfileChunkBytes;
+    char key[64] = {};
+    char index[16] = {};
+    for (size_t i = 0; i < chunks; ++i) {
+        std::snprintf(key, sizeof(key), "modsync_p_%03zu", i);
+        const std::string value = profile.substr(i * kProfileChunkBytes, kProfileChunkBytes);
+        steam.setLobbyData(steam.matchmaking, options.lobbyId, key, value.c_str());
+        steam.Pump();
+    }
+    std::snprintf(index, sizeof(index), "%zu", chunks);
+    steam.setLobbyData(steam.matchmaking, options.lobbyId, "modsync_profile_chunks", index);
+    steam.setLobbyData(steam.matchmaking, options.lobbyId, "modsync_profile_version", kToolVersion);
+    steam.Pump();
+    std::cout << "Host-Profil in Lobby-Data geschrieben (" << chunks << " Chunks).\n";
+}
+
+static bool ReadProfileFromLobbyData(const Options& options, SteamApi& steam, std::string& profile) {
+    if (!steam.getLobbyData) return false;
+    steam.Pump();
+    const char* version = steam.getLobbyData(steam.matchmaking, options.lobbyId, "modsync_profile_version");
+    if (!version || std::string(version) != kToolVersion) return false;
+    const char* countText = steam.getLobbyData(steam.matchmaking, options.lobbyId, "modsync_profile_chunks");
+    if (!countText) return false;
+    const int count = std::atoi(countText);
+    if (count < 1 || count > 2048) return false;
+    std::string joined;
+    char key[64] = {};
+    for (int i = 0; i < count; ++i) {
+        std::snprintf(key, sizeof(key), "modsync_p_%03d", i);
+        const char* chunk = steam.getLobbyData(steam.matchmaking, options.lobbyId, key);
+        if (!chunk || !*chunk) return false;
+        joined += chunk;
+    }
+    if (joined.find("\"format\": \"isaac-mod-profile\"") == std::string::npos) return false;
+    profile = std::move(joined);
+    return true;
+}
+
 static int HostLoop(const Options& options, SteamApi& steam) {
     const std::string profile = ReadProfile(options.profilePath);
+    // Publish once at start AND on every loop: a friend who joins 1-5 s later
+    // sees the complete profile immediately via lobby data.
+    WriteProfileToLobbyData(options, steam, profile);
     std::unordered_map<SteamId, std::string> readyPeers;
     std::unordered_map<SteamId, std::string> ackNonces;
     std::unordered_map<SteamId, DWORD> lastSend;
@@ -534,6 +592,15 @@ static int HostLoop(const Options& options, SteamApi& steam) {
                 std::cout << "Host-Profil an wartendes Lobby-Mitglied gesendet: " << steam.FriendName(peer) << "\n";
             }
         }
+        // Re-publish periodically so a late joiner still finds all chunks.
+        {
+            static DWORD lastPublish = 0;
+            const DWORD now = GetTickCount();
+            if (now - lastPublish > 5000) {
+                WriteProfileToLobbyData(options, steam, profile);
+                lastPublish = now;
+            }
+        }
         Sleep(250);
     }
     return 0;
@@ -562,6 +629,22 @@ static int ClientLoop(const Options& options, SteamApi& steam) {
             steam.Send(owner, ready);
             lastReady = now;
         }
+
+        // Lobby-data fallback first: independent of P2P/NAT timing.
+        std::string lobbyProfile;
+        if (ReadProfileFromLobbyData(options, steam, lobbyProfile)) {
+            {
+                std::ofstream file(output, std::ios::binary | std::ios::trunc);
+                if (file) file.write(lobbyProfile.data(), static_cast<std::streamsize>(lobbyProfile.size()));
+            }
+            {
+                std::ofstream file(senderPath, std::ios::binary | std::ios::trunc);
+                file << owner << "\n" << steam.FriendName(owner) << "\n(lobby-data)\n";
+            }
+            std::cout << "Host-Profil via Lobby-Data empfangen.\n";
+            return 0;
+        }
+
         SteamId sender = 0;
         std::string data;
         while (steam.Receive(sender, data)) {

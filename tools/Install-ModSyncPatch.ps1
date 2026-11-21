@@ -542,7 +542,7 @@ function Install-WatchdogShortcut([string]$ToolsRoot, [string]$Root) {
         $link = $shell.CreateShortcut($linkPath)
         $link.TargetPath = 'powershell.exe'
         $link.Arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + $watchdog +
-            '" -ToolsRoot "' + $ToolsRoot + '" -IsaacRoot "' + $Root + '" -Version 0.0.18'
+            '" -ToolsRoot "' + $ToolsRoot + '" -IsaacRoot "' + $Root + '" -Version 0.0.19'
         $link.Description = 'Starts Isaac ModSync auto lobby sync when the game launches'
         $link.Save()
         Write-Log "Watchdog-Autostart installiert: $linkPath"
@@ -674,7 +674,7 @@ function Invoke-Apply {
         try {
             Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass',
                 '-File', "`"$watcher`"", '-ToolsRoot', "`"$ToolsRoot`"", '-IsaacRoot', "`"$root`"",
-                '-GamePid', "$gamePid", '-Version', '0.0.18') -WindowStyle Hidden -ErrorAction Stop | Out-Null
+                '-GamePid', "$gamePid", '-Version', '0.0.19') -WindowStyle Hidden -ErrorAction Stop | Out-Null
             Write-Log 'Auto-Lobby-Sync-Watcher gestartet.'
         } catch { Write-Log "Auto-Lobby-Sync-Watcher nicht gestartet: $($_.Exception.Message)" }
     } else {

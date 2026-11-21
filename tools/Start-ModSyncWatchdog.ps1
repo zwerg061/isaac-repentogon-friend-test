@@ -7,7 +7,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$ToolsRoot,
     [Parameter(Mandatory = $true)][string]$IsaacRoot,
-    [string]$Version = '0.0.18'
+    [string]$Version = '0.0.19'
 )
 
 $ErrorActionPreference = 'SilentlyContinue'
