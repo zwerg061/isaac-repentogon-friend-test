@@ -4,10 +4,10 @@
 
 #define AppName "Novan Launcher"
 #ifndef AppVersion
-  #define AppVersion "0.0.28"
+  #define AppVersion "0.0.29"
 #endif
 #ifndef SourceDir
-  #define SourceDir "..\\..\\artifacts-v0.0.28"
+  #define SourceDir "..\\..\\artifacts-v0.0.29"
 #endif
 #ifndef OutputDir
   #define OutputDir "."
@@ -40,8 +40,15 @@ DirExistsWarning=no
 
 [Files]
 Source: "{#SourceDir}\isaac-mod-launcher.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceDir}\icon.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\payload\*"; DestDir: "{app}\payload"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SourceDir}\resources\*"; DestDir: "{app}\resources"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+[Registry]
+Root: HKCU; Subkey: "Software\Classes\.isaacpack"; ValueType: string; ValueName: ""; ValueData: "NovanLauncher.isaacpack"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\NovanLauncher.isaacpack"; ValueType: string; ValueName: ""; ValueData: "Novan Isaacpack"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\NovanLauncher.isaacpack\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\icon.ico"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\NovanLauncher.isaacpack\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\isaac-mod-launcher.exe"" ""%1"""; Flags: uninsdeletekey
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\isaac-mod-launcher.exe"
