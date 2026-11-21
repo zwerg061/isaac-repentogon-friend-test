@@ -4,10 +4,10 @@
 
 #define AppName "Novan Launcher"
 #ifndef AppVersion
-  #define AppVersion "0.0.29"
+  #define AppVersion "0.0.30"
 #endif
 #ifndef SourceDir
-  #define SourceDir "..\\..\\artifacts-v0.0.29"
+  #define SourceDir "..\\..\\artifacts-v0.0.30"
 #endif
 #ifndef OutputDir
   #define OutputDir "."
