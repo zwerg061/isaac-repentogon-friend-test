@@ -3,8 +3,8 @@
     Baut den standardkonformen Inno-Setup-Installer (kein RCDATA-Dropper).
 #>
 param(
-    [string]$Version = '0.0.25',
-    [string]$SourceDir = (Join-Path (Split-Path -Parent $PSScriptRoot) 'artifacts-v0.0.25'),
+    [string]$Version = '0.0.26',
+    [string]$SourceDir = (Join-Path (Split-Path -Parent $PSScriptRoot) 'artifacts-v0.0.26'),
     [string]$OutputDir = (Join-Path (Split-Path -Parent $PSScriptRoot) 'sandbox\inno-setup-output'),
     [string]$Iscc = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
 )

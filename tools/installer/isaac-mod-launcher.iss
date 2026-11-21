@@ -1,13 +1,13 @@
-; Standardkonformer Inno-Setup-Installer fuer den Isaac Mod Launcher.
+; Standardkonformer Inno-Setup-Installer fuer den Novan Launcher.
 ; Ersetzt den alten RCDATA-Dropper (FriendTestSetup.exe), der bei Avast/Sophos
 ; durch Heuristik-Alarme auffiel. Keine eingebetteten Payloads, kein Self-Drop.
 
-#define AppName "Isaac Mod Launcher"
+#define AppName "Novan Launcher"
 #ifndef AppVersion
-  #define AppVersion "0.0.25"
+  #define AppVersion "0.0.26"
 #endif
 #ifndef SourceDir
-  #define SourceDir "..\\..\\artifacts-v0.0.25"
+  #define SourceDir "..\\..\\artifacts-v0.0.26"
 #endif
 #ifndef OutputDir
   #define OutputDir "."
@@ -25,7 +25,7 @@ DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 OutputDir={#OutputDir}
-OutputBaseFilename=Isaac-Freund-Test-Setup-{#AppVersion}
+OutputBaseFilename=Novan-Setup-{#AppVersion}
 SetupIconFile=
 Compression=lzma2
 SolidCompression=yes
