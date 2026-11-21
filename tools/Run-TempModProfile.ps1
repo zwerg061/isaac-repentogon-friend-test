@@ -634,9 +634,15 @@ if ($PatchedRepentogonDll) {
     $repentogonOriginalHash = (Get-FileHash -LiteralPath $repentogonDllPath -Algorithm SHA256).Hash
     $repentogonPatchHash = (Get-FileHash -LiteralPath $patchedSource -Algorithm SHA256).Hash
     if ($repentogonOriginalHash -eq $repentogonPatchHash) {
-        Write-Host 'Hinweis: Ziel-DLL ist bereits die gepatchte Version.' -ForegroundColor Yellow
+        # Dauerhafter Patch (v0.0.20) ist bereits installiert. Ein zweiter Swap
+        # wuerde die gepatchte DLL als "Original" sichern und beim Restore genau
+        # diese wieder einsetzen (oder an Lockfiles scheitern) -> Exit 1.
+        # Deshalb: kein Swap, die vorhandene gepatchte DLL bleibt aktiv.
+        Write-Host 'Ziel-DLL ist bereits gepatcht (dauerhafter Patch aktiv) - kein DLL-Swap.' -ForegroundColor Green
+        $onlinePatchEnabled = $false
+    } else {
+        $onlinePatchEnabled = $true
     }
-    $onlinePatchEnabled = $true
 }
 
 if ($HostMode -and $WaitForHostProfile) { throw 'HostMode und WaitForHostProfile sind gegenseitig ausschliessend.' }
@@ -954,6 +960,7 @@ LaunchMode = 0
     $launchArgs = @(
         '--isaac', "`"$gameExe`"",
         '--launch-mode', 'repentogon',
+        '--stealth-mode',
         '--skip-wizard', '--skip-repentogon-update',
         '--configuration-file', "`"$configPath`""
     )
