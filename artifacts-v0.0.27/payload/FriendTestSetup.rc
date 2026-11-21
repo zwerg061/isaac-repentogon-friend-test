@@ -1,0 +1,57 @@
+#include <windows.h>
+#define IDR_PATCHER 101
+#define IDR_GUIDE 102
+#define IDR_MODSYNC 103
+#define IDR_SESSION 104
+#define IDR_STEAMBRIDGE 105
+#define IDR_APPID 106
+#define IDR_VERSION 107
+#define IDR_RESYNC 108
+#define IDR_PATCHED_DLL 109
+#define IDR_INSTALL_SCRIPT 110
+#define IDR_ZHL_LOADER 111
+#define IDR_LIBZHL 112
+#define IDR_LOBBY_WATCHER 113
+#define IDR_WATCHDOG 114
+IDR_PATCHER RCDATA "Patch.exe"
+IDR_GUIDE RCDATA "setup-freundestest-de.txt"
+IDR_MODSYNC RCDATA "modsync.py"
+IDR_SESSION RCDATA "Run-TempModProfile.ps1"
+IDR_STEAMBRIDGE RCDATA "SteamModProfileBridge.exe"
+IDR_APPID RCDATA "steam_appid.txt"
+IDR_VERSION RCDATA "VERSION"
+IDR_RESYNC RCDATA "Resync-ProfileAndSaveData.ps1"
+IDR_PATCHED_DLL RCDATA "zhlREPENTOGON.dll"
+IDR_INSTALL_SCRIPT RCDATA "Install-ModSyncPatch.ps1"
+IDR_ZHL_LOADER RCDATA "zhlLoader.dll"
+IDR_LIBZHL RCDATA "libzhl.dll"
+IDR_LOBBY_WATCHER RCDATA "Start-ModSyncLobbySync.ps1"
+IDR_WATCHDOG RCDATA "Start-ModSyncWatchdog.ps1"
+
+VS_VERSION_INFO VERSIONINFO
+  FILEVERSION 0,0,23,0
+  PRODUCTVERSION 0,0,23,0
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0
+ FILEOS 0x40004L
+ FILETYPE 0x1L
+ FILESUBTYPE 0
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName", "Experimental community tool\0"
+            VALUE "FileDescription", "Isaac REPENTOGON Friend Test Setup\0"
+            VALUE "FileVersion", "0.0.23.0\0"
+            VALUE "InternalName", "Isaac-Freund-Test-Setup\0"
+            VALUE "OriginalFilename", "Isaac-Freund-Test-Setup.exe\0"
+            VALUE "ProductName", "Isaac REPENTOGON Friend Test\0"
+            VALUE "ProductVersion", "0.0.23\0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END
