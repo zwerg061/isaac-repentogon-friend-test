@@ -7,7 +7,7 @@ param(
     [Parameter(Mandatory = $true)][string]$ToolsRoot,
     [Parameter(Mandatory = $true)][string]$IsaacRoot,
     [int]$GamePid = 0,
-    [string]$Version = '0.0.17',
+    [string]$Version = '0.0.18',
     [int]$TimeoutSeconds = 900
 )
 
@@ -32,7 +32,7 @@ function Write-LobbyProgressJson([string]$Status, [int]$Percent, [string]$ModNam
         $target = Join-Path $dir 'lobby_progress.json'
         $temp = $target + '.tmp'
         $visibleUntil = [DateTime]::UtcNow.AddSeconds(4).Ticks
-        $payload = @{ status = $Status; percent = $Percent; mod = $ModName; visibleUntil = $visibleUntil } | ConvertTo-Json -Compress
+        $payload = @{ status = $Status; percent = $Percent; mod = $ModName; visibleUntil = $visibleUntil; in_lobby = $true } | ConvertTo-Json -Compress
         [IO.File]::WriteAllText($temp, $payload, [Text.UTF8Encoding]::new($false))
         Move-Item -LiteralPath $temp -Destination $target -Force
         Write-SyncLog "PROGRESS $Percent% :: $Status :: $ModName"
@@ -59,9 +59,11 @@ function Get-SteamCmd {
 }
 
 function Wait-Lobby {
-    # Start at EOF so an old lobby from a previous session is never reused.
+    # Read the whole log, including lobby lines written BEFORE this script
+    # started (e.g. the host created the lobby while the game was launching).
+    # A lobby is only accepted if no "Leaving current lobby" / shutdown line
+    # follows it.
     $position = 0
-    if (Test-Path -LiteralPath $script:GameLog -PathType Leaf) { $position = (Get-Item -LiteralPath $script:GameLog).Length }
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while ((Get-Date) -lt $deadline) {
         if (Test-Path -LiteralPath $script:GameLog -PathType Leaf) {
@@ -73,14 +75,23 @@ function Wait-Lobby {
                 $text = $reader.ReadToEnd()
                 $position = $stream.Position
                 $reader.Dispose()
-                foreach ($line in ($text -split "`n")) {
+                $lines = @($text -split "`n")
+                $lastLobby = $null
+                $leftAfter = $false
+                foreach ($line in $lines) {
                     if ($line -match 'Successfully created lobby\s+(\d+)') {
-                        return @{ Role = 'host'; Id = $Matches[1] }
+                        $lastLobby = @{ Role = 'host'; Id = $Matches[1] }
+                        $leftAfter = $false
                     }
                     if ($line -match 'Successfully joined lobby\s+(\d+)') {
-                        return @{ Role = 'client'; Id = $Matches[1] }
+                        $lastLobby = @{ Role = 'client'; Id = $Matches[1] }
+                        $leftAfter = $false
+                    }
+                    if ($lastLobby -and ($line -match 'Leaving current lobby' -or $line -match 'Isaac has shut down')) {
+                        $leftAfter = $true
                     }
                 }
+                if ($lastLobby -and -not $leftAfter) { return $lastLobby }
             } catch { Write-SyncLog "Log-LeseFehler: $($_.Exception.Message)" }
             finally { $stream.Dispose() }
         }
@@ -122,6 +133,44 @@ function Get-ActiveProfilePath {
     return $profile
 }
 
+function New-LiveProfileFromMods {
+    # Last-resort host profile: derived exclusively from the currently active
+    # <Isaac>\mods folder, so the host ALWAYS has something to send.
+    $modsDir = Join-Path $IsaacRoot 'mods'
+    $entries = @()
+    if (Test-Path -LiteralPath $modsDir -PathType Container) {
+        Get-ChildItem -LiteralPath $modsDir -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -notlike 'zz_modsync*' -and -not (Test-Path -LiteralPath (Join-Path $_.FullName 'disable.it')) } |
+            Sort-Object Name |
+            ForEach-Object {
+                $name = $_.Name
+                $workshopId = if ($name -match '^(\d+)') { $Matches[1] } else { $null }
+                $entries += [ordered]@{
+                    workshop_id = $workshopId
+                    folder = $name
+                    name = $name
+                    version = $null
+                    sha256 = $null
+                }
+            }
+    }
+    $modSetJson = ($entries | ConvertTo-Json -Compress -Depth 6)
+    $setHash = [BitConverter]::ToString(([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($modSetJson)))).Replace('-', '')
+    $profile = [ordered]@{
+        format = 'isaac-mod-profile'
+        schema_version = 1
+        profile_name = 'Live Host Mods'
+        tool_version = $Version
+        mod_set = @($entries)
+        load_order = @($entries | ForEach-Object { if ($_.workshop_id) { "workshop:$($_.workshop_id)" } else { "local:$($_.folder.ToLowerInvariant())" } })
+        mod_set_sha256 = $setHash
+    }
+    $path = Join-Path $script:SessionRoot 'live-host-profile.json'
+    [IO.File]::WriteAllText($path, ($profile | ConvertTo-Json -Compress -Depth 8), [Text.UTF8Encoding]::new($false))
+    Write-SyncLog "Live-Profil aus mods-Ordner erzeugt: $path ($($entries.Count) Mods, sha=$setHash)"
+    return $path
+}
+
 function Write-LobbyProgress([string]$Activity, [string]$Status, [int]$Percent) {
     Write-Progress -Activity $Activity -Status $Status -PercentComplete ([Math]::Min(99, [Math]::Max(0, $Percent)))
     Write-SyncLog "$Activity :: $Status ($Percent%)"
@@ -143,7 +192,12 @@ try {
     Write-LobbyProgress 'Isaac ModSync Lobby' "Lobby $($lobby.Id) - SteamAPI wird initialisiert" 10
 
     if ($lobby.Role -eq 'host') {
-        $profile = Get-ActiveProfilePath
+        try { $profile = Get-ActiveProfilePath }
+        catch {
+            Write-SyncLog "Host-Profil-Fallback fehlgeschlagen: $($_.Exception.Message)"
+            $profile = New-LiveProfileFromMods
+        }
+        if (-not (Test-Path -LiteralPath $profile -PathType Leaf)) { $profile = New-LiveProfileFromMods }
         $hostSession = Join-Path $script:SessionRoot 'host'
         New-Item -ItemType Directory -Force -Path $hostSession | Out-Null
         $bridgeArgs = @(

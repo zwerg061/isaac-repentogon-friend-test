@@ -23,11 +23,12 @@ $sessionSource = Join-Path $PSScriptRoot 'Run-TempModProfile.ps1'
 $resyncSource = Join-Path $PSScriptRoot 'Resync-ProfileAndSaveData.ps1'
 $bridgeSource = Join-Path $repo 'tool\SteamModProfileBridge.cpp'
 $versionSource = Join-Path $repo 'VERSION'
-$patchedDllSource = Join-Path $repo 'artifacts-v0.0.17\zhlREPENTOGON.dll'
-$loaderSource = Join-Path $repo 'artifacts-v0.0.17\zhlLoader.dll'
-$libZhlSource = Join-Path $repo 'artifacts-v0.0.17\libzhl.dll'
+$patchedDllSource = Join-Path $repo 'artifacts-v0.0.18\zhlREPENTOGON.dll'
+$loaderSource = Join-Path $repo 'artifacts-v0.0.18\zhlLoader.dll'
+$libZhlSource = Join-Path $repo 'artifacts-v0.0.18\libzhl.dll'
 $installScriptSource = Join-Path $PSScriptRoot 'Install-ModSyncPatch.ps1'
 $lobbyWatcherSource = Join-Path $PSScriptRoot 'Start-ModSyncLobbySync.ps1'
+$watchdogSource = Join-Path $PSScriptRoot 'Start-ModSyncWatchdog.ps1'
 
 $version = '0.0.6'
 if (Test-Path -LiteralPath $versionSource -PathType Leaf) {
@@ -52,6 +53,7 @@ if (-not (Test-Path -LiteralPath $loaderSource -PathType Leaf)) { throw "zhlLoad
 if (-not (Test-Path -LiteralPath $libZhlSource -PathType Leaf)) { throw "libzhl.dll fehlt: $libZhlSource" }
 if (-not (Test-Path -LiteralPath $installScriptSource -PathType Leaf)) { throw "Installationsskript fehlt: $installScriptSource" }
 if (-not (Test-Path -LiteralPath $lobbyWatcherSource -PathType Leaf)) { throw "Lobby-Watcher fehlt: $lobbyWatcherSource" }
+if (-not (Test-Path -LiteralPath $watchdogSource -PathType Leaf)) { throw "Watchdog fehlt: $watchdogSource" }
 if ((Test-Path -LiteralPath $setupExe) -and -not $Force) {
     throw "Ausgabedatei existiert bereits; wird nicht Ã¼berschrieben: $setupExe (mit -Force ausdrÃ¼cklich ersetzen)"
 }
@@ -73,6 +75,7 @@ Copy-Item -LiteralPath $loaderSource -Destination (Join-Path $stage 'zhlLoader.d
 Copy-Item -LiteralPath $libZhlSource -Destination (Join-Path $stage 'libzhl.dll')
 Copy-Item -LiteralPath $installScriptSource -Destination (Join-Path $stage 'Install-ModSyncPatch.ps1')
 Copy-Item -LiteralPath $lobbyWatcherSource -Destination (Join-Path $stage 'Start-ModSyncLobbySync.ps1')
+Copy-Item -LiteralPath $watchdogSource -Destination (Join-Path $stage 'Start-ModSyncWatchdog.ps1')
 $bridgeExe = Join-Path $stage 'SteamModProfileBridge.exe'
 $bridgeObj = Join-Path $stage 'SteamModProfileBridge.obj'
 $bridgeRc = Join-Path $stage 'SteamModProfileBridge.rc'
@@ -156,6 +159,7 @@ $resourceFile = Join-Path $stage 'FriendTestSetup.rc'
 #define IDR_ZHL_LOADER 111
 #define IDR_LIBZHL 112
 #define IDR_LOBBY_WATCHER 113
+#define IDR_WATCHDOG 114
 IDR_PATCHER RCDATA "Patch.exe"
 IDR_GUIDE RCDATA "setup-freundestest-de.txt"
 IDR_MODSYNC RCDATA "modsync.py"
@@ -169,6 +173,7 @@ IDR_INSTALL_SCRIPT RCDATA "Install-ModSyncPatch.ps1"
 IDR_ZHL_LOADER RCDATA "zhlLoader.dll"
 IDR_LIBZHL RCDATA "libzhl.dll"
 IDR_LOBBY_WATCHER RCDATA "Start-ModSyncLobbySync.ps1"
+IDR_WATCHDOG RCDATA "Start-ModSyncWatchdog.ps1"
 
 VS_VERSION_INFO VERSIONINFO
   FILEVERSION $versionComma,0
@@ -276,7 +281,8 @@ try {
         @(110, 'Install-ModSyncPatch.ps1'),
         @(111, 'zhlLoader.dll'),
         @(112, 'libzhl.dll'),
-        @(113, 'Start-ModSyncLobbySync.ps1')
+        @(113, 'Start-ModSyncLobbySync.ps1'),
+        @(114, 'Start-ModSyncWatchdog.ps1')
     )
     foreach ($item in $payload) {
         $embedded = Read-EmbeddedResource $module 10 ([int]$item[0])

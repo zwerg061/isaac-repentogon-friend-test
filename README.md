@@ -1,6 +1,6 @@
 ﻿# Isaac REPENTOGON Friend Test
 
-**Version:** 0.0.17 (experimental)<br>
+**Version:** 0.0.18 (experimental)<br>
 **Status:** menu fix and patched REPENTOGON DLL verified in a sandbox; connection
 not yet verified with a second player.
 

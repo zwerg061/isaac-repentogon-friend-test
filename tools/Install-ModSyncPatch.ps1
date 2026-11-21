@@ -532,6 +532,23 @@ LaunchMode = 0
     return 0
 }
 
+function Install-WatchdogShortcut([string]$ToolsRoot, [string]$Root) {
+    $watchdog = Join-Path $ToolsRoot 'Start-ModSyncWatchdog.ps1'
+    if (-not (Test-Path -LiteralPath $watchdog -PathType Leaf)) { return }
+    try {
+        $startup = [Environment]::GetFolderPath('Startup')
+        $linkPath = Join-Path $startup 'Isaac ModSync Lobby Watcher.lnk'
+        $shell = New-Object -ComObject WScript.Shell
+        $link = $shell.CreateShortcut($linkPath)
+        $link.TargetPath = 'powershell.exe'
+        $link.Arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + $watchdog +
+            '" -ToolsRoot "' + $ToolsRoot + '" -IsaacRoot "' + $Root + '" -Version 0.0.18'
+        $link.Description = 'Starts Isaac ModSync auto lobby sync when the game launches'
+        $link.Save()
+        Write-Log "Watchdog-Autostart installiert: $linkPath"
+    } catch { Write-Log "Watchdog-Autostart nicht installiert: $($_.Exception.Message)" }
+}
+
 function Register-Uninstall([string]$SetupExe) {
     if (-not (Test-Path -LiteralPath $SetupExe -PathType Leaf)) { return }
     New-Item -Path $script:UninstallKey -Force | Out-Null
@@ -657,12 +674,13 @@ function Invoke-Apply {
         try {
             Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass',
                 '-File', "`"$watcher`"", '-ToolsRoot', "`"$ToolsRoot`"", '-IsaacRoot', "`"$root`"",
-                '-GamePid', "$gamePid", '-Version', '0.0.17') -WindowStyle Hidden -ErrorAction Stop | Out-Null
+                '-GamePid', "$gamePid", '-Version', '0.0.18') -WindowStyle Hidden -ErrorAction Stop | Out-Null
             Write-Log 'Auto-Lobby-Sync-Watcher gestartet.'
         } catch { Write-Log "Auto-Lobby-Sync-Watcher nicht gestartet: $($_.Exception.Message)" }
     } else {
         Start-CompanionHidden $root $gamePid
     }
+    Install-WatchdogShortcut $ToolsRoot $root
     $state | ConvertTo-Json -Depth 8
 }
 
