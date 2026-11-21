@@ -4,10 +4,10 @@
 
 #define AppName "Novan Launcher"
 #ifndef AppVersion
-  #define AppVersion "0.0.27"
+  #define AppVersion "0.0.28"
 #endif
 #ifndef SourceDir
-  #define SourceDir "..\\..\\artifacts-v0.0.27"
+  #define SourceDir "..\\..\\artifacts-v0.0.28"
 #endif
 #ifndef OutputDir
   #define OutputDir "."
@@ -41,6 +41,7 @@ DirExistsWarning=no
 [Files]
 Source: "{#SourceDir}\isaac-mod-launcher.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\payload\*"; DestDir: "{app}\payload"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SourceDir}\resources\*"; DestDir: "{app}\resources"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\isaac-mod-launcher.exe"
